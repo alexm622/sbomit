@@ -21,7 +21,7 @@ function useTabs() {
 }
 
 interface TabsProps {
-  defaultValue: string;
+  defaultValue?: string;
   value?: string;
   onValueChange?: (value: string) => void;
   children: React.ReactNode;
@@ -35,7 +35,7 @@ function Tabs({
   children,
   className,
 }: TabsProps) {
-  const [internalValue, setInternalValue] = React.useState(defaultValue);
+  const [internalValue, setInternalValue] = React.useState(defaultValue ?? "");
   const activeValue = value !== undefined ? value : internalValue;
 
   return (
@@ -53,7 +53,7 @@ function Tabs({
   );
 }
 
-interface TabsListProps extends React.HTMLAttributes<HTMLDivElement> {}
+type TabsListProps = React.HTMLAttributes<HTMLDivElement>;
 
 const TabsList = React.forwardRef<HTMLDivElement, TabsListProps>(
   ({ className, ...props }, ref) => (

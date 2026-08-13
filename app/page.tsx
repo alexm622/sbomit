@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import {
-  Search,
+  Link as LinkIcon,
   Shield,
   AlertTriangle,
   Package,
@@ -12,11 +12,13 @@ import {
   CheckCircle2,
   XCircle,
   Info,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
 import { Badge } from "@/app/components/ui/badge";
 import { Progress } from "@/app/components/ui/progress";
+import { cn } from "@/app/lib/utils";
 import {
   Card,
   CardContent,
@@ -61,47 +63,6 @@ interface AuditResult {
   weeklyDownloads: string;
 }
 
-const mockAudit: AuditResult = {
-  name: "lodash",
-  version: "4.17.21",
-  score: 82,
-  summary:
-    "A widely-used utility library with a long maintenance history. No known critical vulnerabilities in the current version, but it pulls in a large dependency surface and has had prototype-pollution issues in the past.",
-  risks: [
-    {
-      severity: "medium",
-      title: "Large dependency surface",
-      description:
-        "The package bundles many utility functions. If only a few are used, consider tree-shaking or lighter alternatives to reduce attack surface.",
-    },
-    {
-      severity: "low",
-      title: "Historical prototype pollution",
-      description:
-        "Older versions were affected by prototype-pollution CVEs. Current version is patched; ensure version pinning prevents regressions.",
-    },
-    {
-      severity: "low",
-      title: "Sparse recent releases",
-      description:
-        "The release cadence has slowed. Monitor for security patches and have an upgrade plan.",
-    },
-  ],
-  dependencies: [
-    { name: "lodash", version: "4.17.21", license: "MIT", transitive: false },
-    { name: "commander", version: "2.20.3", license: "MIT", transitive: true },
-    { name: "graceful-fs", version: "4.2.11", license: "ISC", transitive: true },
-  ],
-  license: {
-    type: "MIT",
-    compatible: true,
-    note: "Permissive license compatible with most commercial and open-source projects. Attribution recommended.",
-  },
-  maintainers: ["jdalton", "mathias"],
-  lastPublished: "2021-02-20",
-  weeklyDownloads: "42.3M",
-};
-
 const severityVariant = {
   critical: "destructive",
   high: "destructive",
@@ -115,25 +76,155 @@ const scoreVariant = (score: number) => {
   return "danger";
 };
 
+const exampleUrls = [
+  "https://www.npmjs.com/package/lodash",
+  "https://www.npmjs.com/package/express",
+  "https://www.npmjs.com/package/axios",
+  "https://github.com/facebook/react",
+];
+
+interface Suggestion {
+  name: string;
+  description: string;
+}
+
+function looksLikePackageName(value: string): boolean {
+  // Treat simple package names (no scheme, no slashes) as npm names.
+  return /^[^/\s:]+$/.test(value.trim());
+}
+
 export default function Home() {
-  const [query, setQuery] = React.useState("");
+  const [libraryUrl, setLibraryUrl] = React.useState("");
+  const [prompt, setPrompt] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [result, setResult] = React.useState<AuditResult | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const [activeTab, setActiveTab] = React.useState("overview");
+  const [suggestions, setSuggestions] = React.useState<Suggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = React.useState(false);
+  const [highlightedIndex, setHighlightedIndex] = React.useState(-1);
+  const suggestionsRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const trimmed = libraryUrl.trim();
+    const timer = setTimeout(async () => {
+      if (!trimmed || !looksLikePackageName(trimmed)) {
+        setSuggestions([]);
+        setShowSuggestions(false);
+        return;
+      }
+      try {
+        const res = await fetch(
+          `/api/search?q=${encodeURIComponent(trimmed)}`,
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as { packages: Suggestion[] };
+        setSuggestions(data.packages || []);
+        setShowSuggestions(true);
+        setHighlightedIndex(-1);
+      } catch {
+        // Ignore autocomplete errors
+      }
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [libraryUrl]);
+
+  React.useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        suggestionsRef.current &&
+        !suggestionsRef.current.contains(event.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const selectSuggestion = React.useCallback((name: string) => {
+    setLibraryUrl(`https://www.npmjs.com/package/${name}`);
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setHighlightedIndex(-1);
+  }, []);
+
+  const handleKeyDown = React.useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (!showSuggestions || suggestions.length === 0) return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlightedIndex((prev) =>
+          prev < suggestions.length - 1 ? prev + 1 : 0,
+        );
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlightedIndex((prev) =>
+          prev > 0 ? prev - 1 : suggestions.length - 1,
+        );
+      } else if (e.key === "Enter" && highlightedIndex >= 0) {
+        e.preventDefault();
+        selectSuggestion(suggestions[highlightedIndex].name);
+      } else if (e.key === "Escape") {
+        setShowSuggestions(false);
+      }
+    },
+    [showSuggestions, suggestions, highlightedIndex, selectSuggestion],
+  );
+
+  const normalizeLibraryUrl = React.useCallback((value: string) => {
+    const trimmed = value.trim();
+    if (looksLikePackageName(trimmed)) {
+      return `https://www.npmjs.com/package/${trimmed}`;
+    }
+    return trimmed;
+  }, []);
 
   const handleAudit = React.useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!query.trim()) return;
+      if (!libraryUrl.trim()) return;
       setLoading(true);
       setResult(null);
-      // Simulate network + AI audit delay
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      setResult({ ...mockAudit, name: query.trim() });
-      setLoading(false);
-      setActiveTab("overview");
+      setError(null);
+
+      const normalizedUrl = normalizeLibraryUrl(libraryUrl);
+
+      try {
+        const res = await fetch("/api/audit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            libraryUrl: normalizedUrl,
+            prompt: prompt.trim() || undefined,
+          }),
+        });
+
+        const data = (await res.json()) as {
+          result?: AuditResult;
+          error?: string;
+        };
+
+        if (!res.ok || data.error) {
+          throw new Error(data.error || "Audit failed.");
+        }
+
+        if (!data.result) {
+          throw new Error("No audit result returned.");
+        }
+
+        setResult(data.result);
+        setActiveTab("overview");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Something went wrong.");
+      } finally {
+        setLoading(false);
+      }
     },
-    [query],
+    [libraryUrl, prompt, normalizeLibraryUrl],
   );
 
   return (
@@ -167,26 +258,74 @@ export default function Home() {
               AI audit for npm libraries
             </h1>
             <p className="mt-4 text-lg text-muted-foreground">
-              Search any package and get an instant security, license, and
-              dependency report powered by AI.
+              Paste a library URL and an optional prompt to get an instant
+              security, license, and dependency report powered by OpenAI.
             </p>
 
             <form
               onSubmit={handleAudit}
-              className="mt-10 flex flex-col gap-3 sm:flex-row"
+              className="mt-10 flex flex-col gap-4 text-left"
             >
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+              <div className="relative" ref={suggestionsRef}>
+                <LinkIcon className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
                 <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="e.g. lodash, express, axios"
+                  value={libraryUrl}
+                  onChange={(e) => setLibraryUrl(e.target.value)}
+                  onFocus={() => {
+                    if (suggestions.length > 0) setShowSuggestions(true);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  placeholder="https://www.npmjs.com/package/lodash"
                   className="h-14 pl-10 text-base"
+                  autoComplete="off"
+                  aria-autocomplete="list"
+                  aria-controls="library-url-suggestions"
+                  aria-expanded={showSuggestions}
+                />
+                {showSuggestions && suggestions.length > 0 && (
+                  <div
+                    id="library-url-suggestions"
+                    className="absolute z-50 mt-1 max-h-72 w-full overflow-auto rounded-lg border border-border bg-card shadow-lg"
+                    role="listbox"
+                  >
+                    {suggestions.map((suggestion, index) => (
+                      <button
+                        key={suggestion.name}
+                        type="button"
+                        role="option"
+                        aria-selected={index === highlightedIndex}
+                        onClick={() => selectSuggestion(suggestion.name)}
+                        className={cn(
+                          "w-full px-4 py-3 text-left transition-colors hover:bg-accent",
+                          index === highlightedIndex && "bg-accent",
+                        )}
+                      >
+                        <div className="font-medium">{suggestion.name}</div>
+                        {suggestion.description && (
+                          <div className="line-clamp-1 text-xs text-muted-foreground">
+                            {suggestion.description}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="relative">
+                <MessageSquare className="absolute left-3 top-3 h-5 w-5 text-muted-foreground" />
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="Optional prompt, e.g. Focus on supply-chain risks and license compatibility for enterprise use."
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-input bg-background px-10 py-2.5 text-base text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
+
               <Button
                 type="submit"
-                disabled={loading || !query.trim()}
+                disabled={loading || !libraryUrl.trim()}
                 className="h-14 px-8 text-base"
               >
                 {loading ? (
@@ -203,16 +342,23 @@ export default function Home() {
               </Button>
             </form>
 
+            {error && (
+              <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-left text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+                <XCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                <p>{error}</p>
+              </div>
+            )}
+
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-sm text-muted-foreground">
               <span>Try:</span>
-              {["lodash", "express", "axios", "react"].map((pkg) => (
+              {exampleUrls.map((url) => (
                 <button
-                  key={pkg}
+                  key={url}
                   type="button"
-                  onClick={() => setQuery(pkg)}
+                  onClick={() => setLibraryUrl(url)}
                   className="rounded-full border border-border px-3 py-1 hover:bg-accent hover:text-accent-foreground"
                 >
-                  {pkg}
+                  {url.replace("https://www.npmjs.com/package/", "npm:").replace("https://github.com/", "gh:")}
                 </button>
               ))}
             </div>
