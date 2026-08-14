@@ -57,12 +57,28 @@ interface Dependency {
   transitive: boolean;
 }
 
+interface InvestigationArea {
+  area: string;
+  rationale: string;
+  files: string[];
+}
+
+interface DeepDiveFinding {
+  area: string;
+  file: string;
+  issue: string;
+  evidence: string;
+  severity: "critical" | "high" | "medium" | "low";
+}
+
 interface AuditResult {
   name: string;
   version: string;
   score: number;
   summary: string;
   risks: Risk[];
+  investigationAreas: InvestigationArea[];
+  deepDiveFindings: DeepDiveFinding[];
   dependencies: Dependency[];
   license: {
     type: string;
@@ -118,14 +134,19 @@ const pipelineSteps = [
     detail: "Fetching package data from the npm registry or GitHub API.",
   },
   {
+    icon: Database,
+    label: "Fetching source code",
+    detail: "Downloading and unpacking the package tarball for code inspection.",
+  },
+  {
     icon: MessageSquare,
-    label: "Building the audit prompt",
-    detail: "Assembling a bounded metadata context plus your custom prompt.",
+    label: "Identifying investigation areas",
+    detail: "First AI pass: pinpoint the files and patterns worth scrutinizing.",
   },
   {
     icon: Zap,
-    label: "Running the AI audit",
-    detail: "OpenAI generates a schema-validated security and license report.",
+    label: "Deep-diving into code",
+    detail: "Second AI pass: analyze the selected files and produce a structured report.",
   },
   {
     icon: CheckCircle2,
@@ -650,8 +671,20 @@ export default function Home() {
             </div>
 
             <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="mb-6">
+              <TabsList className="mb-6 flex-wrap">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
+                <TabsTrigger value="investigation">
+                  Investigation
+                  <Badge variant="secondary" className="ml-2">
+                    {result.investigationAreas.length}
+                  </Badge>
+                </TabsTrigger>
+                <TabsTrigger value="deep-dive">
+                  Deep Dive
+                  <Badge variant="secondary" className="ml-2">
+                    {result.deepDiveFindings.length}
+                  </Badge>
+                </TabsTrigger>
                 <TabsTrigger value="risks">
                   Risks
                   <Badge variant="secondary" className="ml-2">
@@ -740,6 +773,89 @@ export default function Home() {
                     {result.summary}
                   </CardContent>
                 </Card>
+              </TabsContent>
+
+              <TabsContent value="investigation" className="space-y-4">
+                {result.investigationAreas.length === 0 ? (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      No investigation areas identified. This may happen when
+                      the source code was not available for inspection.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  result.investigationAreas.map((area, index) => (
+                    <Card key={index}>
+                      <CardHeader>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3">
+                            <Search className="h-5 w-5 text-primary" />
+                            <CardTitle className="text-lg">
+                              {area.area}
+                            </CardTitle>
+                          </div>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="text-muted-foreground">
+                          {area.rationale}
+                        </p>
+                        {area.files.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {area.files.map((file) => (
+                              <Badge key={file} variant="outline">
+                                {file}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))
+                )}
+              </TabsContent>
+
+              <TabsContent value="deep-dive" className="space-y-4">
+                {result.deepDiveFindings.length === 0 ? (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      No file-level findings. Either no issues were found or
+                      the source code was not inspected.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  result.deepDiveFindings.map((finding, index) => (
+                    <Card key={index}>
+                      <CardHeader>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3">
+                            <FileText className="h-5 w-5 text-primary" />
+                            <CardTitle className="text-lg">
+                              {finding.file}
+                            </CardTitle>
+                          </div>
+                          <Badge variant={severityVariant[finding.severity]}>
+                            {finding.severity}
+                          </Badge>
+                        </div>
+                        <CardDescription>{finding.area}</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="font-medium">{finding.issue}</p>
+                        {finding.evidence && (
+                          <div className="rounded-lg bg-muted/50 p-3">
+                            <p className="mb-1 text-xs font-medium text-muted-foreground">
+                              Evidence
+                            </p>
+                            <pre className="whitespace-pre-wrap font-mono text-xs text-foreground">
+                              {finding.evidence}
+                            </pre>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))
+                )}
               </TabsContent>
 
               <TabsContent value="risks" className="space-y-4">

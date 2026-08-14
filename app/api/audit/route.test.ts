@@ -34,11 +34,26 @@ const baseResult: AuditResult = {
   score: 85,
   summary: "Looks good.",
   risks: [],
+  investigationAreas: [],
+  deepDiveFindings: [],
   dependencies: [],
   license: { type: "MIT", compatible: true, note: "" },
   maintainers: [],
   lastPublished: "recently",
   weeklyDownloads: "many",
+};
+
+const baseInteraction = {
+  provider: "openai" as const,
+  model: "gpt-4o-mini",
+  systemPrompt: "system",
+  userPrompt: "user",
+  request: { model: "gpt-4o-mini" },
+  response: { choices: [{ message: { parsed: baseResult } }] },
+  startedAt: "2024-01-01T00:00:00.000Z",
+  finishedAt: "2024-01-01T00:00:01.000Z",
+  tokensInput: 100,
+  tokensOutput: 50,
 };
 
 const npmMetadata = {
@@ -73,6 +88,8 @@ async function setupSchema(db: D1Database) {
       `score INTEGER NOT NULL,` +
       `result_json TEXT NOT NULL,` +
       `cache_key TEXT UNIQUE,` +
+      `interaction_json TEXT,` +
+      `codebase_inspected INTEGER DEFAULT 0,` +
       `created_at DATETIME DEFAULT CURRENT_TIMESTAMP,` +
       `FOREIGN KEY (audit_id) REFERENCES package_audits(id) ON DELETE CASCADE` +
       `);`,
@@ -88,6 +105,10 @@ describe("POST /api/audit", () => {
 
   beforeEach(() => {
     mockGetLlmConfig.mockReturnValue({ model: "gpt-4o-mini" });
+    mockRunLibraryAudit.mockResolvedValue({
+      result: baseResult,
+      interactions: [baseInteraction],
+    });
   });
 
   afterEach(async () => {
@@ -101,7 +122,6 @@ describe("POST /api/audit", () => {
     globalThis.fetch = mockFetch(
       () => new Response(JSON.stringify(npmMetadata), { status: 200 }),
     );
-    mockRunLibraryAudit.mockResolvedValue(baseResult);
 
     const request = new Request("http://localhost/api/audit", {
       method: "POST",
@@ -114,7 +134,12 @@ describe("POST /api/audit", () => {
     const response = await POST(request);
     const data = (await response.json()) as {
       result: AuditResult;
-      meta: { cached: boolean; auditId: number; reportId: number };
+      meta: {
+        cached: boolean;
+        auditId: number;
+        reportId: number;
+        interactions: { provider: string; model: string }[];
+      };
     };
 
     expect(response.status).toBe(200);
@@ -122,13 +147,19 @@ describe("POST /api/audit", () => {
     expect(data.meta.auditId).toBeGreaterThan(0);
     expect(data.meta.reportId).toBeGreaterThan(0);
     expect(data.result.name).toBe("lodash");
+    expect(data.meta.interactions).toHaveLength(1);
+    expect(data.meta.interactions[0].provider).toBe("openai");
+    expect(data.meta.interactions[0].model).toBe("gpt-4o-mini");
   });
 
   it("returns a cached audit on identical input", async () => {
     globalThis.fetch = mockFetch(
       () => new Response(JSON.stringify(npmMetadata), { status: 200 }),
     );
-    mockRunLibraryAudit.mockResolvedValue(baseResult);
+    mockRunLibraryAudit.mockResolvedValue({
+      result: baseResult,
+      interactions: [baseInteraction],
+    });
 
     const first = await POST(
       new Request("http://localhost/api/audit", {

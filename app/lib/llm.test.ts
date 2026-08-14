@@ -53,6 +53,8 @@ const baseResult: AuditResult = {
   score: 85,
   summary: "Looks good.",
   risks: [],
+  investigationAreas: [],
+  deepDiveFindings: [],
   dependencies: [],
   license: { type: "MIT", compatible: true, note: "" },
   maintainers: [],
@@ -84,9 +86,14 @@ describe("runLibraryAudit", () => {
       ],
     });
 
-    const result = await runLibraryAudit(context);
+    const { result, interactions } = await runLibraryAudit(context);
     expect(result.score).toBe(86);
     expect(result.name).toBe("lodash");
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0].provider).toBe("openai");
+    expect(interactions[0].model).toBe("gpt-4o-mini");
+    expect(interactions[0].systemPrompt).toBeDefined();
+    expect(interactions[0].userPrompt).toContain("lodash");
     expect(mockParse).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "gpt-4o-mini",
@@ -96,6 +103,52 @@ describe("runLibraryAudit", () => {
         ]),
       }),
     );
+  });
+
+  it("runs a two-phase audit when a codebase snapshot is provided", async () => {
+    const contextWithCodebase = {
+      ...context,
+      codebase: {
+        fileCount: 1,
+        totalSize: 100,
+        files: [{ path: "package.json", size: 100, content: '{"name":"x"}' }],
+      },
+    };
+
+    mockParse
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              parsed: {
+                investigationAreas: [
+                  {
+                    area: "Package manifest",
+                    rationale: "Check for risky scripts.",
+                    files: ["package.json"],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              parsed: { ...baseResult, score: 88.5 },
+            },
+          },
+        ],
+      });
+
+    const { result, interactions } = await runLibraryAudit(
+      contextWithCodebase,
+    );
+    expect(result.score).toBe(89);
+    expect(interactions).toHaveLength(2);
+    expect(mockParse).toHaveBeenCalledTimes(2);
   });
 
   it("throws AuditParseError when parsed is missing", async () => {
@@ -165,8 +218,10 @@ describe("runLibraryAudit", () => {
     );
     vi.stubGlobal("fetch", mockFetch);
 
-    const result = await runLibraryAudit(context);
+    const { result, interactions } = await runLibraryAudit(context);
     expect(result.score).toBe(92);
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0].provider).toBe("anthropic");
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.anthropic.com/v1/messages",
       expect.objectContaining({
@@ -217,8 +272,10 @@ describe("runLibraryAudit", () => {
     );
     vi.stubGlobal("fetch", mockFetch);
 
-    const result = await runLibraryAudit(context);
+    const { result, interactions } = await runLibraryAudit(context);
     expect(result.score).toBe(78);
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0].provider).toBe("google");
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent",

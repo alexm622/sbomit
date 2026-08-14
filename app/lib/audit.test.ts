@@ -259,6 +259,8 @@ describe("postProcessAuditResult", () => {
     score: 85.7,
     summary: "Looks good.",
     risks: [],
+    investigationAreas: [],
+    deepDiveFindings: [],
     dependencies: [],
     license: { type: "MIT", compatible: true, note: "" },
     maintainers: [],
@@ -319,5 +321,28 @@ describe("postProcessAuditResult", () => {
     );
     expect(result.name).toBe("lodash");
     expect(result.version).toBe("4.17.21");
+  });
+
+  it("caps investigation areas and deep dive findings", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        investigationAreas: Array.from({ length: 15 }, (_, i) => ({
+          area: `Area ${i}`,
+          rationale: "rationale",
+          files: ["file.js"],
+        })),
+        deepDiveFindings: Array.from({ length: 30 }, (_, i) => ({
+          area: "Area",
+          file: "file.js",
+          issue: `Issue ${i}`,
+          evidence: "evidence",
+          severity: "low" as const,
+        })),
+      },
+      context,
+    );
+    expect(result.investigationAreas).toHaveLength(10);
+    expect(result.deepDiveFindings).toHaveLength(20);
   });
 });

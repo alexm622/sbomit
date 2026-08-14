@@ -23,6 +23,8 @@ export interface StoredAuditReport {
   score: number;
   result_json: string;
   cache_key: string | null;
+  interaction_json: string | null;
+  codebase_inspected: number;
   created_at: string;
 }
 
@@ -37,6 +39,12 @@ export interface StoredAuditReportSummary {
   version: string;
   source: string;
   url: string;
+  provider: string | null;
+  tokens_input: number | null;
+  tokens_output: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  codebase_inspected: number;
 }
 
 export async function getDb(env?: Record<string, unknown>): Promise<D1Database> {
@@ -120,6 +128,8 @@ export async function saveAuditReport(
     score: number;
     resultJson: string;
     cacheKey?: string;
+    interactionJson?: string;
+    codebaseInspected?: boolean;
   },
 ): Promise<{ auditId: number; reportId: number }> {
   const insertAudit = db
@@ -136,7 +146,7 @@ export async function saveAuditReport(
 
   const insertReport = db
     .prepare(
-      `INSERT INTO audit_reports (audit_id, prompt, model, score, result_json, cache_key) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO audit_reports (audit_id, prompt, model, score, result_json, cache_key, interaction_json, codebase_inspected) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       auditId,
@@ -145,6 +155,8 @@ export async function saveAuditReport(
       input.score,
       input.resultJson,
       input.cacheKey ?? null,
+      input.interactionJson ?? null,
+      input.codebaseInspected ? 1 : 0,
     );
 
   const reportResult = await insertReport.run<{ id: number }>();
@@ -213,7 +225,13 @@ export async function listAuditReports(
   const result = await db
     .prepare(
       `SELECT r.id, r.audit_id, r.prompt, r.model, r.score, r.created_at,
-              a.name, a.version, a.source, a.url
+              a.name, a.version, a.source, a.url,
+              JSON_EXTRACT(r.interaction_json, '$.provider') AS provider,
+              JSON_EXTRACT(r.interaction_json, '$.tokensInput') AS tokens_input,
+              JSON_EXTRACT(r.interaction_json, '$.tokensOutput') AS tokens_output,
+              JSON_EXTRACT(r.interaction_json, '$.startedAt') AS started_at,
+              JSON_EXTRACT(r.interaction_json, '$.finishedAt') AS finished_at,
+              r.codebase_inspected
        FROM audit_reports r
        JOIN package_audits a ON a.id = r.audit_id
        ORDER BY r.created_at DESC, r.id DESC

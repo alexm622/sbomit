@@ -5,7 +5,8 @@ import {
   getAuditReportByCacheKey,
   type StoredAuditReport,
 } from "@/app/lib/db";
-import { getLlmConfig, runLibraryAudit } from "@/app/lib/llm";
+import { getLlmConfig, runLibraryAudit, type LlmInteraction } from "@/app/lib/llm";
+import { resolveCodebase } from "@/app/lib/audit";
 import {
   MissingInputError,
   isAuditError,
@@ -32,6 +33,16 @@ function storedReportToResult(report: StoredAuditReport): AuditResult {
   return JSON.parse(report.result_json) as AuditResult;
 }
 
+function storedReportToInteractions(
+  report: StoredAuditReport,
+): LlmInteraction[] | undefined {
+  if (!report.interaction_json) return undefined;
+  const parsed = JSON.parse(report.interaction_json) as
+    | LlmInteraction
+    | LlmInteraction[];
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
 export async function POST(request: Request) {
   try {
     let body: unknown;
@@ -43,7 +54,12 @@ export async function POST(request: Request) {
 
     const { libraryUrl, prompt } = parseRequestBody(body);
     const db = await getDb();
-    const context = await resolveLibrary(libraryUrl);
+    let context = await resolveLibrary(libraryUrl);
+    const codebase = await resolveCodebase(context);
+    const codebaseInspected = !!codebase && codebase.files.length > 0;
+    if (codebase) {
+      context = { ...context, codebase };
+    }
     const cacheKey = await computeCacheKey(context, prompt);
 
     // Cache check: return a stored report for identical inputs.
@@ -57,14 +73,17 @@ export async function POST(request: Request) {
             cached: true,
             auditId: cached.audit_id,
             reportId: cached.id,
+            codebaseInspected: cached.codebase_inspected === 1,
+            interactions: storedReportToInteractions(cached),
           },
         },
         { status: 200 },
       );
     }
 
-    const result = await runLibraryAudit(context, prompt);
+    const { result, interactions } = await runLibraryAudit(context, prompt);
     const resultJson = JSON.stringify(result);
+    const interactionJson = JSON.stringify(interactions);
     const { model } = getLlmConfig();
 
     const { auditId, reportId } = await saveAuditReport(db, {
@@ -77,6 +96,8 @@ export async function POST(request: Request) {
       score: result.score,
       resultJson,
       cacheKey,
+      interactionJson,
+      codebaseInspected,
     });
 
     return Response.json(
@@ -86,6 +107,8 @@ export async function POST(request: Request) {
           cached: false,
           auditId,
           reportId,
+          codebaseInspected,
+          interactions,
         },
       },
       { status: 200 },

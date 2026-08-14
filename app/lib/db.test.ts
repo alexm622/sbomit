@@ -46,6 +46,8 @@ async function setupSchema(db: D1Database) {
       `score INTEGER NOT NULL,` +
       `result_json TEXT NOT NULL,` +
       `cache_key TEXT UNIQUE,` +
+      `interaction_json TEXT,` +
+      `codebase_inspected INTEGER DEFAULT 0,` +
       `created_at DATETIME DEFAULT CURRENT_TIMESTAMP,` +
       `FOREIGN KEY (audit_id) REFERENCES package_audits(id) ON DELETE CASCADE` +
       `);`,
@@ -211,6 +213,34 @@ describe("db helpers", () => {
 
     expect(await getAuditReportById(db, reportId)).toBeNull();
     expect(await getAuditById(db, auditId)).toBeNull();
+  });
+
+  it("saveAuditReport persists interaction_json", async () => {
+    const { reportId } = await saveAuditReport(db, {
+      name: "lodash",
+      version: "4.17.21",
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      model: "gpt-4o-mini",
+      score: 85,
+      resultJson: JSON.stringify({ score: 85 }),
+      interactionJson: JSON.stringify({
+        provider: "openai",
+        model: "gpt-4o-mini",
+        tokensInput: 100,
+        tokensOutput: 50,
+        startedAt: "2024-01-01T00:00:00.000Z",
+        finishedAt: "2024-01-01T00:00:02.000Z",
+      }),
+    });
+
+    const report = await getAuditReportById(db, reportId);
+    expect(report?.interaction_json).toContain("openai");
+
+    const reports = await listAuditReports(db);
+    expect(reports[0].provider).toBe("openai");
+    expect(reports[0].tokens_input).toBe(100);
+    expect(reports[0].tokens_output).toBe(50);
   });
 
   it("deleteAuditReport returns false for a missing report", async () => {

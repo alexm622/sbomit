@@ -3,12 +3,15 @@
 import * as React from "react";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
   Clock,
   History,
   Loader2,
   MessageSquare,
   Package,
   RefreshCw,
+  Terminal,
   Trash2,
   X,
   XCircle,
@@ -23,6 +26,7 @@ import {
 import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
 import { Card, CardContent } from "@/app/components/ui/card";
+import type { LlmInteraction } from "@/app/lib/llm";
 
 interface AuditHistoryItem {
   id: number;
@@ -35,6 +39,17 @@ interface AuditHistoryItem {
   version: string;
   source: string;
   url: string;
+  provider: string | null;
+  tokens_input: number | null;
+  tokens_output: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  codebase_inspected: number;
+}
+
+interface LoadedInteraction {
+  reportId: number;
+  interactions: LlmInteraction[];
 }
 
 const scoreBadgeVariant = (score: number) => {
@@ -71,6 +86,145 @@ function formatDuration(startedAt: number, finishedAt?: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+function formatIsoDuration(
+  startedAt: string | null,
+  finishedAt: string | null,
+): string {
+  if (!startedAt || !finishedAt) return "";
+  const start = new Date(startedAt).getTime();
+  const end = new Date(finishedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return "";
+  const ms = Math.max(0, end - start);
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function formatJson(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function providerLabel(provider: string | null): string {
+  if (!provider) return "unknown";
+  if (provider === "openai") return "OpenAI";
+  if (provider === "anthropic") return "Anthropic";
+  if (provider === "google") return "Google";
+  return provider;
+}
+
+function codebaseStatusLabel(inspected?: boolean): string {
+  return inspected ? "Source inspected" : "Metadata only";
+}
+
+function CodeBlock({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-lg border bg-background">
+      <div className="border-b bg-muted px-3 py-1.5 text-xs font-medium text-muted-foreground">
+        {title}
+      </div>
+      <pre className="max-h-96 overflow-auto p-3 text-xs">{children}</pre>
+    </div>
+  );
+}
+
+function aggregateTokens(interactions: LlmInteraction[]): {
+  input: number | undefined;
+  output: number | undefined;
+} {
+  let input = 0;
+  let output = 0;
+  let hasInput = false;
+  let hasOutput = false;
+  for (const interaction of interactions) {
+    if (interaction.tokensInput != null) {
+      input += interaction.tokensInput;
+      hasInput = true;
+    }
+    if (interaction.tokensOutput != null) {
+      output += interaction.tokensOutput;
+      hasOutput = true;
+    }
+  }
+  return {
+    input: hasInput ? input : undefined,
+    output: hasOutput ? output : undefined,
+  };
+}
+
+function InteractionsLogView({
+  interactions,
+}: {
+  interactions: LlmInteraction[];
+}) {
+  return (
+    <div className="space-y-6">
+      {interactions.map((interaction, idx) => (
+        <div key={idx}>
+          <div className="mb-2 text-sm font-medium text-muted-foreground">
+            Phase {idx + 1}
+          </div>
+          <InteractionLogView interaction={interaction} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InteractionLogView({
+  interaction,
+}: {
+  interaction: LlmInteraction;
+}) {
+  const duration = formatIsoDuration(
+    interaction.startedAt,
+    interaction.finishedAt,
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Badge variant="outline">{providerLabel(interaction.provider)}</Badge>
+        <span className="text-muted-foreground">{interaction.model}</span>
+        {duration && (
+          <span className="text-muted-foreground">· {duration}</span>
+        )}
+        {interaction.tokensInput != null && (
+          <span className="text-muted-foreground">
+            · {interaction.tokensInput} tokens in
+          </span>
+        )}
+        {interaction.tokensOutput != null && (
+          <span className="text-muted-foreground">
+            · {interaction.tokensOutput} tokens out
+          </span>
+        )}
+      </div>
+
+      <CodeBlock title="System prompt">{interaction.systemPrompt}</CodeBlock>
+      <CodeBlock title="User prompt">{interaction.userPrompt}</CodeBlock>
+      <CodeBlock title="Request">
+        {formatJson(interaction.request)}
+      </CodeBlock>
+      {interaction.response != null && (
+        <CodeBlock title="Response">
+          {formatJson(interaction.response)}
+        </CodeBlock>
+      )}
+      {interaction.error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+          Error: {interaction.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AuditsPage() {
   const { jobs, cancelAudit, dismissJob } = useAuditJobs();
   const [history, setHistory] = React.useState<AuditHistoryItem[] | null>(
@@ -81,6 +235,13 @@ export default function AuditsPage() {
     null,
   );
   const [deletingId, setDeletingId] = React.useState<number | null>(null);
+  const [expandedId, setExpandedId] = React.useState<number | null>(null);
+  const [loadedInteraction, setLoadedInteraction] =
+    React.useState<LoadedInteraction | null>(null);
+  const [loadingInteractionId, setLoadingInteractionId] = React.useState<
+    number | null
+  >(null);
+  const [expandedJobId, setExpandedJobId] = React.useState<string | null>(null);
 
   const completedCount = jobs.filter(
     (job) => job.status === "completed",
@@ -117,6 +278,47 @@ export default function AuditsPage() {
     const timer = setTimeout(() => setConfirmDeleteId(null), 4000);
     return () => clearTimeout(timer);
   }, [confirmDeleteId]);
+
+  const loadInteraction = React.useCallback(async (reportId: number) => {
+    setLoadingInteractionId(reportId);
+    try {
+      const res = await fetch(`/api/audits/${reportId}`, { cache: "no-store" });
+      const data = (await res.json()) as {
+        interactions?: LlmInteraction[];
+        error?: string;
+      };
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to load interaction log.");
+      }
+      if (data.interactions) {
+        setLoadedInteraction({ reportId, interactions: data.interactions });
+      }
+      setHistoryError(null);
+    } catch (error) {
+      setHistoryError(
+        error instanceof Error ? error.message : "Failed to load interaction log.",
+      );
+    } finally {
+      setLoadingInteractionId(null);
+    }
+  }, []);
+
+  const toggleExpanded = React.useCallback(
+    (reportId: number) => {
+      if (expandedId === reportId) {
+        setExpandedId(null);
+        return;
+      }
+      setExpandedId(reportId);
+      if (
+        !loadedInteraction ||
+        loadedInteraction.reportId !== reportId
+      ) {
+        void loadInteraction(reportId);
+      }
+    },
+    [expandedId, loadedInteraction, loadInteraction],
+  );
 
   const handleDelete = React.useCallback(
     async (reportId: number) => {
@@ -180,6 +382,12 @@ export default function AuditsPage() {
               <div className="space-y-3">
                 {jobs.map((job) => {
                   const status = jobStatusBadge[job.status];
+                  const isJobExpanded = expandedJobId === job.id;
+                  const duration =
+                    job.status !== "running"
+                      ? formatDuration(job.startedAt, job.finishedAt)
+                      : null;
+
                   return (
                     <Card key={job.id}>
                       <CardContent className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -195,6 +403,15 @@ export default function AuditsPage() {
                             <Badge variant={status.variant}>
                               {status.label}
                             </Badge>
+                            {job.status === "completed" && (
+                              <Badge
+                                variant={
+                                  job.codebaseInspected ? "success" : "outline"
+                                }
+                              >
+                                {codebaseStatusLabel(job.codebaseInspected)}
+                              </Badge>
+                            )}
                           </div>
                           <div className="mt-1 text-sm text-muted-foreground">
                             Started {formatTime(job.startedAt)}
@@ -208,9 +425,26 @@ export default function AuditsPage() {
                                 />
                               </>
                             ) : (
-                              <> · took {formatDuration(job.startedAt, job.finishedAt)}</>
+                              <> · took {duration}</>
                             )}
                           </div>
+                          {job.status === "completed" && job.interactions && (
+                            <div className="mt-1 text-sm text-muted-foreground">
+                              {providerLabel(job.interactions[0]?.provider)} ·{" "}
+                              {job.interactions[0]?.model}
+                              {(() => {
+                                const tokens = aggregateTokens(job.interactions);
+                                return (
+                                  <>
+                                    {tokens.input != null &&
+                                      ` · ${tokens.input} in`}
+                                    {tokens.output != null &&
+                                      ` / ${tokens.output} out`}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          )}
                           {job.prompt && (
                             <div className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground">
                               <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -234,17 +468,45 @@ export default function AuditsPage() {
                               Cancel
                             </Button>
                           ) : (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => dismissJob(job.id)}
-                              aria-label="Dismiss"
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
+                            <>
+                              {job.status === "completed" && job.interactions && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() =>
+                                    setExpandedJobId(
+                                      isJobExpanded ? null : job.id,
+                                    )
+                                  }
+                                  aria-expanded={isJobExpanded}
+                                  aria-label="Toggle LLM interaction log"
+                                >
+                                  <Terminal className="mr-1.5 h-4 w-4" />
+                                  {isJobExpanded ? "Hide log" : "View log"}
+                                  {isJobExpanded ? (
+                                    <ChevronUp className="ml-1.5 h-4 w-4" />
+                                  ) : (
+                                    <ChevronDown className="ml-1.5 h-4 w-4" />
+                                  )}
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => dismissJob(job.id)}
+                                aria-label="Dismiss"
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </>
                           )}
                         </div>
                       </CardContent>
+                      {isJobExpanded && job.interactions && (
+                        <CardContent className="border-t bg-muted/30 px-4 py-4">
+                          <InteractionsLogView interactions={job.interactions} />
+                        </CardContent>
+                      )}
                     </Card>
                   );
                 })}
@@ -295,66 +557,129 @@ export default function AuditsPage() {
 
             {history !== null && history.length > 0 && (
               <div className="space-y-3">
-                {history.map((item) => (
-                  <Card key={item.id}>
-                    <CardContent className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Package className="h-4 w-4 text-muted-foreground" />
-                          <span className="truncate font-medium">
-                            {item.name}
-                            <span className="font-normal text-muted-foreground">
-                              @{item.version}
+                {history.map((item) => {
+                  const isExpanded = expandedId === item.id;
+                  const interactions =
+                    loadedInteraction?.reportId === item.id
+                      ? loadedInteraction.interactions
+                      : undefined;
+                  const duration = formatIsoDuration(
+                    item.started_at,
+                    item.finished_at,
+                  );
+                  const tokenHint =
+                    item.tokens_input != null || item.tokens_output != null
+                      ? `${item.tokens_input ?? "-"} in / ${item.tokens_output ?? "-"} out`
+                      : null;
+
+                  return (
+                    <Card key={item.id}>
+                      <CardContent className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Package className="h-4 w-4 text-muted-foreground" />
+                            <span className="truncate font-medium">
+                              {item.name}
+                              <span className="font-normal text-muted-foreground">
+                                @{item.version}
+                              </span>
                             </span>
-                          </span>
-                          <Badge variant="outline">{item.source}</Badge>
-                          <Badge variant={scoreBadgeVariant(item.score)}>
-                            score {item.score}
-                          </Badge>
-                        </div>
-                        <div className="mt-1 text-sm text-muted-foreground">
-                          {formatTimestamp(item.created_at)} · {item.model} ·
-                          report #{item.id}
-                        </div>
-                        {item.prompt && (
-                          <div className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground">
-                            <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                            <span className="line-clamp-1">{item.prompt}</span>
+                            <Badge variant="outline">{item.source}</Badge>
+                            <Badge variant={scoreBadgeVariant(item.score)}>
+                              score {item.score}
+                            </Badge>
+                            <Badge
+                              variant={
+                                item.codebase_inspected === 1
+                                  ? "success"
+                                  : "outline"
+                              }
+                            >
+                              {codebaseStatusLabel(
+                                item.codebase_inspected === 1,
+                              )}
+                            </Badge>
                           </div>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <Button
-                          variant={
-                            confirmDeleteId === item.id
-                              ? "destructive"
-                              : "outline"
-                          }
-                          size="sm"
-                          disabled={deletingId === item.id}
-                          onClick={() => void handleDelete(item.id)}
-                        >
-                          {deletingId === item.id ? (
-                            <>
-                              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                              Deleting
-                            </>
-                          ) : confirmDeleteId === item.id ? (
-                            <>
-                              <AlertTriangle className="mr-1.5 h-4 w-4" />
-                              Confirm delete
-                            </>
-                          ) : (
-                            <>
-                              <Trash2 className="mr-1.5 h-4 w-4" />
-                              Delete
-                            </>
+                          <div className="mt-1 text-sm text-muted-foreground">
+                            {formatTimestamp(item.created_at)} · {item.model} ·
+                            report #{item.id}
+                            {item.provider && (
+                              <> · {providerLabel(item.provider)}</>
+                            )}
+                            {duration && <> · {duration}</>}
+                            {tokenHint && <> · {tokenHint}</>}
+                          </div>
+                          {item.prompt && (
+                            <div className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground">
+                              <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              <span className="line-clamp-1">{item.prompt}</span>
+                            </div>
                           )}
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => toggleExpanded(item.id)}
+                            aria-expanded={isExpanded}
+                            aria-label="Toggle LLM interaction log"
+                          >
+                            <Terminal className="mr-1.5 h-4 w-4" />
+                            {isExpanded ? "Hide log" : "View log"}
+                            {isExpanded ? (
+                              <ChevronUp className="ml-1.5 h-4 w-4" />
+                            ) : (
+                              <ChevronDown className="ml-1.5 h-4 w-4" />
+                            )}
+                          </Button>
+                          <Button
+                            variant={
+                              confirmDeleteId === item.id
+                                ? "destructive"
+                                : "outline"
+                            }
+                            size="sm"
+                            disabled={deletingId === item.id}
+                            onClick={() => void handleDelete(item.id)}
+                          >
+                            {deletingId === item.id ? (
+                              <>
+                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                                Deleting
+                              </>
+                            ) : confirmDeleteId === item.id ? (
+                              <>
+                                <AlertTriangle className="mr-1.5 h-4 w-4" />
+                                Confirm delete
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="mr-1.5 h-4 w-4" />
+                                Delete
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </CardContent>
+                      {isExpanded && (
+                        <CardContent className="border-t bg-muted/30 px-4 py-4">
+                          {loadingInteractionId === item.id ? (
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Loading interaction log…
+                            </div>
+                          ) : !interactions ? (
+                            <div className="text-sm text-muted-foreground">
+                              No interaction log available for this report.
+                            </div>
+                          ) : (
+                            <InteractionsLogView interactions={interactions} />
+                          )}
+                        </CardContent>
+                      )}
+                    </Card>
+                  );
+                })}
               </div>
             )}
           </div>

@@ -5,19 +5,42 @@ import {
   RepoNotFoundError,
   UpstreamRateLimitError,
 } from "./errors";
+import type { CodebaseSnapshot } from "./codebase";
+import {
+  buildCodebaseSnapshot,
+  fetchGitHubTarball,
+  fetchNpmTarball,
+  formatSnapshotForLlm,
+} from "./codebase";
+
+const riskSchema = z.object({
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  title: z.string(),
+  description: z.string(),
+});
+
+const investigationAreaSchema = z.object({
+  area: z.string(),
+  rationale: z.string(),
+  files: z.array(z.string()),
+});
+
+const deepDiveFindingSchema = z.object({
+  area: z.string(),
+  file: z.string(),
+  issue: z.string(),
+  evidence: z.string(),
+  severity: z.enum(["critical", "high", "medium", "low"]),
+});
 
 export const auditResultSchema = z.object({
   name: z.string(),
   version: z.string(),
   score: z.number().min(0).max(100),
   summary: z.string(),
-  risks: z.array(
-    z.object({
-      severity: z.enum(["critical", "high", "medium", "low"]),
-      title: z.string(),
-      description: z.string(),
-    }),
-  ),
+  risks: z.array(riskSchema),
+  investigationAreas: z.array(investigationAreaSchema),
+  deepDiveFindings: z.array(deepDiveFindingSchema),
   dependencies: z.array(
     z.object({
       name: z.string(),
@@ -37,6 +60,9 @@ export const auditResultSchema = z.object({
 });
 
 export type AuditResult = z.infer<typeof auditResultSchema>;
+export type Risk = z.infer<typeof riskSchema>;
+export type InvestigationArea = z.infer<typeof investigationAreaSchema>;
+export type DeepDiveFinding = z.infer<typeof deepDiveFindingSchema>;
 
 interface NpmMetadata {
   name: string;
@@ -76,6 +102,7 @@ export interface LibraryContext {
   name: string;
   version: string;
   metadata: NpmMetadata | GitHubRepo;
+  codebase?: CodebaseSnapshot;
 }
 
 const MAX_RISKS = 20;
@@ -83,6 +110,8 @@ const MAX_DEPENDENCIES = 500;
 const MAX_SUMMARY_LENGTH = 2000;
 const MAX_METADATA_BYTES = 8192;
 const MAX_PROMPT_LENGTH = 1000;
+const MAX_INVESTIGATION_AREAS = 10;
+const MAX_DEEP_DIVE_FINDINGS = 20;
 
 function parseNpmUrl(url: string): string | null {
   try {
@@ -217,13 +246,58 @@ export async function resolveLibrary(
   throw new UnsupportedSourceError();
 }
 
+export async function resolveCodebase(
+  context: LibraryContext,
+): Promise<CodebaseSnapshot | undefined> {
+  try {
+    if (context.source === "npm") {
+      const metadata = context.metadata as NpmMetadata;
+      const tarballUrl = metadata.dist?.tarball;
+      if (!tarballUrl) {
+        console.error("No tarball URL in npm metadata.");
+        return undefined;
+      }
+      const files = await fetchNpmTarball(tarballUrl);
+      return buildCodebaseSnapshot(files);
+    }
+
+    const gh = parseGitHubUrl(context.url);
+    if (gh) {
+      const files = await fetchGitHubTarball(gh.owner, gh.repo);
+      return buildCodebaseSnapshot(files);
+    }
+
+    return undefined;
+  } catch (error) {
+    // Codebase inspection is best-effort; fall back to metadata-only audit.
+    console.error(
+      "Failed to resolve codebase:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return undefined;
+  }
+}
+
+export function buildCodebasePrompt(context: LibraryContext): string {
+  if (!context.codebase) return "";
+  return formatSnapshotForLlm(context.codebase);
+}
+
 export function postProcessAuditResult(
   result: AuditResult,
   context: LibraryContext,
 ): AuditResult {
-  // Clamp risk/dependency list lengths and summary size.
+  // Clamp list lengths and summary size.
   const risks = result.risks.slice(0, MAX_RISKS);
   const dependencies = result.dependencies.slice(0, MAX_DEPENDENCIES);
+  const investigationAreas = result.investigationAreas.slice(
+    0,
+    MAX_INVESTIGATION_AREAS,
+  );
+  const deepDiveFindings = result.deepDiveFindings.slice(
+    0,
+    MAX_DEEP_DIVE_FINDINGS,
+  );
 
   // Deduplicate risks by title (case-insensitive) preserving order.
   const seenTitles = new Set<string>();
@@ -245,6 +319,8 @@ export function postProcessAuditResult(
     score: Math.min(100, Math.max(0, Math.round(result.score))),
     summary: result.summary.slice(0, MAX_SUMMARY_LENGTH),
     risks: dedupedRisks,
+    investigationAreas,
+    deepDiveFindings,
     dependencies,
   };
 }

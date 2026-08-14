@@ -3,23 +3,77 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import {
   auditResultSchema,
   buildAuditPrompt,
+  buildCodebasePrompt,
   postProcessAuditResult,
   type AuditResult,
+  type InvestigationArea,
   type LibraryContext,
 } from "./audit";
 import { AuditParseError, UpstreamRateLimitError } from "./errors";
+import { z } from "zod";
 
-type Provider = "openai" | "anthropic" | "google";
+export type Provider = "openai" | "anthropic" | "google";
 
-interface LlmConfig {
+const investigationSchema = z.object({
+  investigationAreas: z.array(
+    z.object({
+      area: z.string(),
+      rationale: z.string(),
+      files: z.array(z.string()),
+    }),
+  ),
+});
+
+export interface LlmConfig {
   provider: Provider;
   apiKey: string;
   model: string;
   baseUrl?: string;
 }
 
-const SYSTEM_PROMPT =
-  "You are a software supply-chain auditor. Analyze library metadata and produce a structured audit report. Be factual and conservative. If data is missing, infer reasonably or mark uncertainty with lower severity.";
+export interface LlmInteraction {
+  provider: Provider;
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  request: unknown;
+  response?: unknown;
+  startedAt: string;
+  finishedAt: string;
+  tokensInput?: number;
+  tokensOutput?: number;
+  error?: string;
+}
+
+export interface AuditWithInteractions {
+  result: AuditResult;
+  interactions: LlmInteraction[];
+}
+
+const INVESTIGATION_PROMPT = `You are a software supply-chain auditor reviewing a library's source code.
+
+Your first task is to identify the most important areas to investigate for security, supply-chain, and dependency risks. Look at the metadata and the provided codebase snapshot (file names and contents). Focus on:
+- install / postinstall / lifecycle scripts
+- network calls, dynamic requires, eval, child_process
+- obfuscated or minified code bundled in source
+- dependency pinning and lockfile hygiene
+- sensitive file access, environment variable reads
+- unexpected top-level side effects
+
+Return 3-10 investigation areas. For each area include:
+- area: short name
+- rationale: why it matters
+- files: specific file paths from the snapshot to examine in detail`;
+
+const DEEP_DIVE_PROMPT = `You are a software supply-chain auditor performing a deep code review.
+
+You previously identified key investigation areas. Now examine the FULL CONTENTS of the files listed for those areas and produce a complete, structured audit report.
+
+Be specific: cite file paths and line snippets as evidence. If a concern turns out to be benign after inspection, note that and lower the severity. If you find concrete issues, explain the exploit path or maintenance risk.`;
+
+const METADATA_ONLY_PROMPT = `You are a software supply-chain auditor reviewing library metadata. The full source code was not available, so base your assessment on the metadata alone.
+
+Identify areas that would be worth investigating if the source code were available, and produce a structured audit report. Be explicit that findings are inferred from metadata, not confirmed by code inspection.`;
 
 export function getLlmConfig(): LlmConfig {
   const provider = (
@@ -129,33 +183,6 @@ function toGeminiSchema(node: unknown): unknown {
   return obj;
 }
 
-async function runOpenAiAudit(
-  config: LlmConfig,
-  content: string,
-): Promise<AuditResult> {
-  const client = new OpenAI({
-    apiKey: config.apiKey,
-    baseURL: config.baseUrl,
-  });
-
-  const completion = await client.chat.completions.parse({
-    model: config.model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content },
-    ],
-    response_format: zodResponseFormat(auditResultSchema, "audit_result"),
-  });
-
-  const parsed = completion.choices[0]?.message?.parsed;
-  if (!parsed) {
-    throw new AuditParseError(
-      "The LLM did not return a structured audit result.",
-    );
-  }
-  return parsed;
-}
-
 interface AnthropicToolUseBlock {
   type: "tool_use";
   name: string;
@@ -166,12 +193,88 @@ interface AnthropicMessageResponse {
   content: AnthropicToolUseBlock[];
 }
 
-async function runAnthropicAudit(
+interface GeminiResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{ text?: string }>;
+    };
+  }>;
+}
+
+async function runOpenAiStructured<T>(
   config: LlmConfig,
+  systemPrompt: string,
   content: string,
-): Promise<AuditResult> {
+  schema: z.ZodSchema<T>,
+  schemaName: string,
+): Promise<{ parsed: T; interaction: LlmInteraction }> {
+  const startedAt = new Date().toISOString();
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: config.baseUrl,
+  });
+
+  const messages = [
+    { role: "system" as const, content: systemPrompt },
+    { role: "user" as const, content },
+  ];
+  const requestPayload = {
+    model: config.model,
+    messages,
+    response_format: zodResponseFormat(schema, schemaName),
+  };
+
+  const completion = await client.chat.completions.parse(requestPayload);
+  const finishedAt = new Date().toISOString();
+
+  const parsed = completion.choices[0]?.message?.parsed as T | undefined;
+  if (!parsed) {
+    throw new AuditParseError(
+      "The LLM did not return a structured result.",
+    );
+  }
+
+  const interaction: LlmInteraction = {
+    provider: "openai",
+    model: config.model,
+    systemPrompt,
+    userPrompt: content,
+    request: requestPayload,
+    response: completion,
+    startedAt,
+    finishedAt,
+    tokensInput: completion.usage?.prompt_tokens,
+    tokensOutput: completion.usage?.completion_tokens,
+  };
+
+  return { parsed, interaction };
+}
+
+async function runAnthropicStructured<T>(
+  config: LlmConfig,
+  systemPrompt: string,
+  content: string,
+  schema: z.ZodSchema<T>,
+  toolName: string,
+): Promise<{ parsed: T; interaction: LlmInteraction }> {
+  const startedAt = new Date().toISOString();
   const endpoint = config.baseUrl || "https://api.anthropic.com/v1/messages";
-  const inputSchema = cleanJsonSchema(auditResultSchema.toJSONSchema());
+  const inputSchema = cleanJsonSchema(schema.toJSONSchema());
+
+  const requestPayload = {
+    model: config.model,
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: [{ role: "user" as const, content }],
+    tools: [
+      {
+        name: toolName,
+        description: "Return a structured result.",
+        input_schema: inputSchema,
+      },
+    ],
+    tool_choice: { type: "tool" as const, name: toolName },
+  };
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -180,22 +283,9 @@ async function runAnthropicAudit(
       "x-api-key": config.apiKey,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content }],
-      tools: [
-        {
-          name: "audit_result",
-          description:
-            "Return a structured software supply-chain audit report.",
-          input_schema: inputSchema,
-        },
-      ],
-      tool_choice: { type: "tool", name: "audit_result" },
-    }),
+    body: JSON.stringify(requestPayload),
   });
+  const finishedAt = new Date().toISOString();
 
   if (!response.ok) {
     if (response.status === 429) {
@@ -212,54 +302,63 @@ async function runAnthropicAudit(
   const data = (await response.json()) as AnthropicMessageResponse;
   const toolUse = data.content.find(
     (block): block is AnthropicToolUseBlock =>
-      block.type === "tool_use" && block.name === "audit_result",
+      block.type === "tool_use" && block.name === toolName,
   );
   if (!toolUse) {
     throw new AuditParseError(
-      "Anthropic did not return a structured audit result.",
+      "Anthropic did not return a structured result.",
     );
   }
 
-  return auditResultSchema.parse(toolUse.input);
+  const interaction: LlmInteraction = {
+    provider: "anthropic",
+    model: config.model,
+    systemPrompt,
+    userPrompt: content,
+    request: requestPayload,
+    response: data,
+    startedAt,
+    finishedAt,
+  };
+
+  return { parsed: schema.parse(toolUse.input), interaction };
 }
 
-interface GeminiResponse {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{ text?: string }>;
-    };
-  }>;
-}
-
-async function runGoogleAudit(
+async function runGoogleStructured<T>(
   config: LlmConfig,
+  systemPrompt: string,
   content: string,
-): Promise<AuditResult> {
+  schema: z.ZodSchema<T>,
+): Promise<{ parsed: T; interaction: LlmInteraction }> {
+  const startedAt = new Date().toISOString();
+  const responseSchema = toGeminiSchema(schema.toJSONSchema());
+
+  const requestPayload = {
+    systemInstruction: {
+      parts: [{ text: systemPrompt }],
+    },
+    contents: [
+      {
+        role: "user" as const,
+        parts: [{ text: content }],
+      },
+    ],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema,
+    },
+  };
+
   const endpoint =
     config.baseUrl ||
     `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
 
-  const responseSchema = toGeminiSchema(auditResultSchema.toJSONSchema());
-
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
-      },
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: content }],
-        },
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema,
-      },
-    }),
+    body: JSON.stringify(requestPayload),
   });
+  const finishedAt = new Date().toISOString();
 
   if (!response.ok) {
     if (response.status === 429) {
@@ -277,38 +376,197 @@ async function runGoogleAudit(
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     throw new AuditParseError(
-      "Gemini did not return a structured audit result.",
+      "Gemini did not return a structured result.",
     );
   }
 
-  return auditResultSchema.parse(JSON.parse(text));
+  const interaction: LlmInteraction = {
+    provider: "google",
+    model: config.model,
+    systemPrompt,
+    userPrompt: content,
+    request: requestPayload,
+    response: data,
+    startedAt,
+    finishedAt,
+  };
+
+  return { parsed: schema.parse(JSON.parse(text)), interaction };
+}
+
+async function runStructured<T>(
+  config: LlmConfig,
+  systemPrompt: string,
+  content: string,
+  schema: z.ZodSchema<T>,
+  schemaName: string,
+): Promise<{ parsed: T; interaction: LlmInteraction }> {
+  switch (config.provider) {
+    case "openai":
+      return runOpenAiStructured(config, systemPrompt, content, schema, schemaName);
+    case "anthropic":
+      return runAnthropicStructured(
+        config,
+        systemPrompt,
+        content,
+        schema,
+        schemaName,
+      );
+    case "google":
+      return runGoogleStructured(config, systemPrompt, content, schema);
+    default:
+      throw new AuditParseError(
+        `Unsupported LLM provider: ${config.provider}.`,
+      );
+  }
+}
+
+function buildMetadataSection(
+  context: LibraryContext,
+  userPrompt?: string,
+): string {
+  return buildAuditPrompt(context, userPrompt);
+}
+
+function buildInvestigationContent(
+  context: LibraryContext,
+  userPrompt?: string,
+): string {
+  const metadata = buildMetadataSection(context, userPrompt);
+  const codebase = buildCodebasePrompt(context);
+  return `${metadata}\n\n${INVESTIGATION_PROMPT}\n\n${codebase}`;
+}
+
+function buildDeepDiveContent(
+  context: LibraryContext,
+  areas: InvestigationArea[],
+  userPrompt?: string,
+): string {
+  const metadata = buildMetadataSection(context, userPrompt);
+
+  const areasText = JSON.stringify(
+    {
+      investigationAreas: areas,
+    },
+    null,
+    2,
+  );
+
+  // Pull full contents for files mentioned in the investigation areas.
+  const relevantFiles = new Set<string>();
+  for (const area of areas) {
+    for (const file of area.files) {
+      relevantFiles.add(file);
+    }
+  }
+
+  const fileContents: string[] = [];
+  if (context.codebase) {
+    for (const file of context.codebase.files) {
+      if (relevantFiles.has(file.path)) {
+        fileContents.push(
+          `--- FILE: ${file.path} ---\n${file.content}`,
+        );
+      }
+    }
+  }
+
+  const filesText =
+    fileContents.length > 0
+      ? `Files selected for deep review:\n\n${fileContents.join("\n\n")}`
+      : "No source files were available for deep review.";
+
+  return `${metadata}\n\n${DEEP_DIVE_PROMPT}\n\nInvestigation areas:\n${areasText}\n\n${filesText}`;
+}
+
+function buildMetadataOnlyContent(
+  context: LibraryContext,
+  userPrompt?: string,
+): string {
+  const metadata = buildMetadataSection(context, userPrompt);
+  return `${metadata}\n\n${METADATA_ONLY_PROMPT}`;
+}
+
+async function runInvestigationPhase(
+  context: LibraryContext,
+  config: LlmConfig,
+  userPrompt?: string,
+): Promise<{ areas: InvestigationArea[]; interaction: LlmInteraction }> {
+  const content = buildInvestigationContent(context, userPrompt);
+  const { parsed, interaction } = await runStructured(
+    config,
+    INVESTIGATION_PROMPT,
+    content,
+    investigationSchema,
+    "investigation_areas",
+  );
+  return { areas: parsed.investigationAreas, interaction };
+}
+
+async function runAuditPhase(
+  context: LibraryContext,
+  config: LlmConfig,
+  areas: InvestigationArea[],
+  userPrompt?: string,
+): Promise<{ result: AuditResult; interaction: LlmInteraction }> {
+  const content = buildDeepDiveContent(context, areas, userPrompt);
+  const { parsed, interaction } = await runStructured(
+    config,
+    DEEP_DIVE_PROMPT,
+    content,
+    auditResultSchema,
+    "audit_result",
+  );
+  return { result: parsed, interaction };
+}
+
+async function runMetadataOnlyAudit(
+  context: LibraryContext,
+  config: LlmConfig,
+  userPrompt?: string,
+): Promise<{ result: AuditResult; interaction: LlmInteraction }> {
+  const content = buildMetadataOnlyContent(context, userPrompt);
+  const { parsed, interaction } = await runStructured(
+    config,
+    METADATA_ONLY_PROMPT,
+    content,
+    auditResultSchema,
+    "audit_result",
+  );
+  return { result: parsed, interaction };
 }
 
 export async function runLibraryAudit(
   context: LibraryContext,
   userPrompt?: string,
-): Promise<AuditResult> {
-  const content = buildAuditPrompt(context, userPrompt);
+): Promise<AuditWithInteractions> {
   const config = getLlmConfig();
 
   try {
-    let parsed: AuditResult;
-    switch (config.provider) {
-      case "openai":
-        parsed = await runOpenAiAudit(config, content);
-        break;
-      case "anthropic":
-        parsed = await runAnthropicAudit(config, content);
-        break;
-      case "google":
-        parsed = await runGoogleAudit(config, content);
-        break;
-      default:
-        throw new AuditParseError(
-          `Unsupported LLM provider: ${config.provider}.`,
-        );
+    let result: AuditResult;
+    const interactions: LlmInteraction[] = [];
+
+    if (context.codebase && context.codebase.files.length > 0) {
+      const { areas, interaction: investigationInteraction } =
+        await runInvestigationPhase(context, config, userPrompt);
+      interactions.push(investigationInteraction);
+
+      const { result: auditResult, interaction: auditInteraction } =
+        await runAuditPhase(context, config, areas, userPrompt);
+      result = auditResult;
+      interactions.push(auditInteraction);
+    } else {
+      const { result: auditResult, interaction } = await runMetadataOnlyAudit(
+        context,
+        config,
+        userPrompt,
+      );
+      result = auditResult;
+      interactions.push(interaction);
     }
-    return postProcessAuditResult(parsed, context);
+
+    result = postProcessAuditResult(result, context);
+    return { result, interactions };
   } catch (error) {
     if (error instanceof APIError) {
       if (error.status === 429) {
@@ -321,7 +579,10 @@ export async function runLibraryAudit(
         `OpenAI-compatible request failed: ${error.message || "unknown error"}`,
       );
     }
-    if (error instanceof UpstreamRateLimitError || error instanceof AuditParseError) {
+    if (
+      error instanceof UpstreamRateLimitError ||
+      error instanceof AuditParseError
+    ) {
       throw error;
     }
     throw new AuditParseError(

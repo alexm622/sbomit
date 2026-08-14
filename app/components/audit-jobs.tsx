@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import type { AuditResult } from "@/app/lib/audit";
+import type { LlmInteraction } from "@/app/lib/llm";
 
 export type AuditJobStatus = "running" | "completed" | "failed" | "cancelled";
 
@@ -14,12 +15,16 @@ export interface AuditJob {
   startedAt: number;
   finishedAt?: number;
   error?: string;
+  codebaseInspected?: boolean;
+  interactions?: LlmInteraction[];
 }
 
 export interface AuditJobMeta {
   cached: boolean;
   auditId: number;
   reportId: number;
+  codebaseInspected?: boolean;
+  interactions?: LlmInteraction[];
 }
 
 export type AuditOutcome =
@@ -118,7 +123,12 @@ export function AuditJobsProvider({
             throw new Error("No audit result returned.");
           }
 
-          updateJob(jobId, { status: "completed", finishedAt: Date.now() });
+          updateJob(jobId, {
+            status: "completed",
+            finishedAt: Date.now(),
+            codebaseInspected: data.meta?.codebaseInspected,
+            interactions: data.meta?.interactions,
+          });
           return {
             status: "completed",
             result: data.result,
