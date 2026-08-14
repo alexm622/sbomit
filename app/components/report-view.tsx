@@ -126,14 +126,14 @@ export function ReportView({ report }: ReportViewProps) {
   }, [report, result]);
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
             <Lock className="h-5 w-5" />
           </div>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">
+          <div className="min-w-0">
+            <h1 className="break-words text-xl font-bold tracking-tight sm:text-2xl">
               Audit report for {result.name}
             </h1>
             <p className="text-sm text-muted-foreground">
@@ -141,41 +141,61 @@ export function ReportView({ report }: ReportViewProps) {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleExportMarkdown}>
+        <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportMarkdown}
+            className="flex-1 sm:flex-none"
+          >
             <FileText className="mr-2 h-4 w-4" />
             Markdown
           </Button>
-          <Button variant="outline" size="sm" onClick={handleExportJson}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportJson}
+            className="flex-1 sm:flex-none"
+          >
             <FileJson className="mr-2 h-4 w-4" />
             JSON
           </Button>
         </div>
       </div>
 
-      <div className="mb-6 flex items-center gap-2 text-sm text-muted-foreground">
-        <Calendar className="h-4 w-4" />
-        <span>{new Date(report.createdAt).toLocaleString()}</span>
-        <span className="mx-2">·</span>
-        <Shield className="h-4 w-4" />
-        <span>Score {report.score}/100</span>
+      <div className="mb-6 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Calendar className="h-4 w-4 shrink-0" />
+          <span>{new Date(report.createdAt).toLocaleString()}</span>
+        </div>
+        <span className="hidden sm:inline">·</span>
+        <div className="flex items-center gap-2">
+          <Shield className="h-4 w-4 shrink-0" />
+          <span>Score {report.score}/100</span>
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="mb-6">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="risks">
+        <TabsList className="mb-6 h-auto w-full justify-start overflow-x-auto rounded-lg bg-muted p-1 sm:w-auto">
+          <TabsTrigger value="overview" className="shrink-0">
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="risks" className="shrink-0">
             Risks
-            <Badge variant="secondary" className="ml-2">
+            <Badge variant="secondary" className="ml-2 hidden sm:inline-flex">
               {result.risks.length}
             </Badge>
           </TabsTrigger>
-          <TabsTrigger value="dependencies">Dependencies</TabsTrigger>
-          <TabsTrigger value="license">License</TabsTrigger>
+          <TabsTrigger value="dependencies" className="shrink-0">
+            Dependencies
+          </TabsTrigger>
+          <TabsTrigger value="license" className="shrink-0">
+            License
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card>
               <CardHeader className="pb-3">
                 <CardDescription>Trust Score</CardDescription>
@@ -185,14 +205,19 @@ export function ReportView({ report }: ReportViewProps) {
                 </div>
               </CardHeader>
               <CardContent>
-                <Progress value={result.score} variant={scoreVariant(result.score)} />
+                <Progress
+                  value={result.score}
+                  variant={scoreVariant(result.score)}
+                />
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="pb-3">
                 <CardDescription>Version</CardDescription>
-                <CardTitle className="text-2xl">{result.version}</CardTitle>
+                <CardTitle className="break-words text-2xl">
+                  {result.version}
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground">
@@ -204,17 +229,23 @@ export function ReportView({ report }: ReportViewProps) {
             <Card>
               <CardHeader className="pb-3">
                 <CardDescription>Weekly Downloads</CardDescription>
-                <CardTitle className="text-2xl">{result.weeklyDownloads}</CardTitle>
+                <CardTitle className="break-words text-2xl">
+                  {result.weeklyDownloads}
+                </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-muted-foreground">npm registry estimate</p>
+                <p className="text-sm text-muted-foreground">
+                  npm registry estimate
+                </p>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="pb-3">
                 <CardDescription>License</CardDescription>
-                <CardTitle className="text-2xl">{result.license.type}</CardTitle>
+                <CardTitle className="break-words text-2xl">
+                  {result.license.type}
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground">
@@ -227,7 +258,7 @@ export function ReportView({ report }: ReportViewProps) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Info className="h-5 w-5 text-muted-foreground" />
+                <Info className="h-5 w-5 shrink-0 text-muted-foreground" />
                 AI Summary
               </CardTitle>
             </CardHeader>
@@ -249,12 +280,17 @@ export function ReportView({ report }: ReportViewProps) {
             result.risks.map((risk, index) => (
               <Card key={index}>
                 <CardHeader>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <AlertTriangle className="h-5 w-5 text-amber-500" />
-                      <CardTitle className="text-lg">{risk.title}</CardTitle>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+                      <CardTitle className="text-lg leading-snug">
+                        {risk.title}
+                      </CardTitle>
                     </div>
-                    <Badge variant={severityVariant[risk.severity]}>
+                    <Badge
+                      variant={severityVariant[risk.severity]}
+                      className="w-fit shrink-0"
+                    >
                       {risk.severity}
                     </Badge>
                   </div>
@@ -271,7 +307,7 @@ export function ReportView({ report }: ReportViewProps) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Package className="h-5 w-5 text-muted-foreground" />
+                <Package className="h-5 w-5 shrink-0 text-muted-foreground" />
                 Dependency Tree
               </CardTitle>
               <CardDescription>
@@ -284,41 +320,45 @@ export function ReportView({ report }: ReportViewProps) {
                   No dependencies identified.
                 </p>
               ) : (
-                <div className="overflow-hidden rounded-lg border border-border">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted">
-                      <tr>
-                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Package
-                        </th>
-                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Version
-                        </th>
-                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          License
-                        </th>
-                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Type
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {result.dependencies.map((dep) => (
-                        <tr key={`${dep.name}@${dep.version}`}>
-                          <td className="px-4 py-3 font-medium">{dep.name}</td>
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {dep.version}
-                          </td>
-                          <td className="px-4 py-3">
-                            <Badge variant="outline">{dep.license}</Badge>
-                          </td>
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {dep.transitive ? "Transitive" : "Direct"}
-                          </td>
+                <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+                  <div className="inline-block min-w-full align-middle">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-muted">
+                        <tr>
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                            Package
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                            Version
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                            License
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                            Type
+                          </th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {result.dependencies.map((dep) => (
+                          <tr key={`${dep.name}@${dep.version}`}>
+                            <td className="whitespace-nowrap px-4 py-3 font-medium">
+                              {dep.name}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                              {dep.version}
+                            </td>
+                            <td className="px-4 py-3">
+                              <Badge variant="outline">{dep.license}</Badge>
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                              {dep.transitive ? "Transitive" : "Direct"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -329,13 +369,13 @@ export function ReportView({ report }: ReportViewProps) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Scale className="h-5 w-5 text-muted-foreground" />
+                <Scale className="h-5 w-5 shrink-0 text-muted-foreground" />
                 License Analysis
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
                   <CheckCircle2 className="h-6 w-6" />
                 </div>
                 <div>
