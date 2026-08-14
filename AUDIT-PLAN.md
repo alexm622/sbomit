@@ -65,8 +65,7 @@ and typed errors.
 - Normalize on the client (`normalizeUrl`): bare package names become
   `https://www.npmjs.com/package/<name>`; URLs pass through trimmed.
 - Server re-validates: only npm package URLs and `github.com` URLs are
-  supported; anything else → typed `UnsupportedSourceError` (currently a
-  generic 500; planned: 422 with code).
+  supported; anything else → typed `UnsupportedSourceError` (422 with code).
 - Prompt is optional, trimmed, and length-capped (planned: 1,000 chars) to
   bound token spend.
 
@@ -91,8 +90,8 @@ interface LibraryContext {
   cache). 404 → `PackageNotFoundError`.
 - **GitHub adapter** — parses `/<owner>/<repo>`, fetches
   `https://api.github.com/repos/<owner>/<repo>` with a `User-Agent` header.
-  404 → `RepoNotFoundError`; 403 → rate-limit error (planned: attach
-  `Retry-After`).
+  404 → `RepoNotFoundError`; 403/429 → `UpstreamRateLimitError` with optional
+  `Retry-After` header.
 
 **Known gap:** GitHub resolution does not fetch `package.json`, so GitHub
 audits have no dependency data. Planned: fetch `raw.githubusercontent.com`
@@ -116,14 +115,14 @@ the LLM call, and will eventually own the trust score:
 Enrichment runs in parallel (`Promise.all`), each signal independently
 failure-tolerant: a failed signal is omitted, never fatal.
 
-### 3.4 Cache Check (Planned)
+### 3.4 Cache Check
 
 Key: `sha256(source + name + version + normalizedPrompt)` — or without the
 prompt when using the default. Lookups:
 
 1. **D1 `audit_reports`** — durable dedupe; hit returns stored report with
-   `cache: "hit"` metadata.
-2. **KV (optional)** — short-TTL hot cache for trending packages.
+   `meta.cached: true` metadata.
+2. **KV (optional)** — short-TTL hot cache for trending packages (planned).
 
 TTL policy: 24h for `latest`-version audits, effectively permanent for pinned
 versions (`pkg@1.2.3`). Cache writes happen after validation (§3.7).
@@ -172,7 +171,7 @@ auditResultSchema = {
 }
 ```
 
-Post-parse checks (planned):
+Post-parse checks (shipped in `postProcessAuditResult`):
 
 - Clamp/dedupe risks; cap list lengths (risks ≤ 20, dependencies ≤ 500).
 - Cross-check `name`/`version` against resolved context; override if the
@@ -190,7 +189,7 @@ Current schema (`0001_initial.sql`):
 - `package_dependencies` — dependency rows keyed by `audit_id`
   (populated by `/api/dependencies`, not by `/api/audit`).
 
-Planned (`0002_audit_reports.sql`):
+Shipped (`0002_audit_reports.sql`):
 
 ```sql
 CREATE TABLE audit_reports (
@@ -309,7 +308,7 @@ anonymous. Turnstile gate if abuse appears (see TODO §4.4).
 | Enrichment        | `app/lib/signals.ts` (new)        | planned  |
 | Cache             | `app/lib/cache.ts` (new)          | planned  |
 | LLM audit         | `app/lib/openai.ts`               | shipped  |
-| Validation        | `app/lib/audit.ts` (schema)       | shipped, post-checks planned |
-| Persistence       | `app/lib/db.ts`, `migrations/`    | partial  |
+| Validation        | `app/lib/audit.ts` (schema)       | shipped, post-checks shipped |
+| Persistence       | `app/lib/db.ts`, `migrations/`    | shipped  |
 | Rate limiting     | `app/lib/rate-limit.ts` (new)     | planned  |
 | Scoring rubric    | `app/lib/score.ts` (new)          | planned  |

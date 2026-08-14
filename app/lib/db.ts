@@ -1,3 +1,5 @@
+import { DbUnavailableError } from "./errors";
+
 export interface StoredDependency {
   name: string;
   version: string;
@@ -13,14 +15,48 @@ export interface StoredAudit {
   audited_at: string;
 }
 
-export async function getDb(): Promise<D1Database> {
-  const db = (process.env as Record<string, D1Database | undefined>).DB;
-  if (!db) {
-    throw new Error(
-      "D1 database binding (DB) is not available. Run with Cloudflare runtime or wrangler dev.",
-    );
+export interface StoredAuditReport {
+  id: number;
+  audit_id: number;
+  prompt: string | null;
+  model: string;
+  score: number;
+  result_json: string;
+  cache_key: string | null;
+  created_at: string;
+}
+
+export async function getDb(env?: Record<string, unknown>): Promise<D1Database> {
+  if (env) {
+    const db = env.DB as D1Database | undefined;
+    if (db) {
+      return db;
+    }
+    throw new DbUnavailableError();
   }
-  return db;
+
+  const processDb = (process.env as Record<string, D1Database | undefined>).DB;
+  if (processDb) {
+    return processDb;
+  }
+
+  // Resolve the binding from the Cloudflare context. Works when deployed to
+  // Workers (OpenNext), in `opennextjs-cloudflare preview`, and in `next dev`
+  // via the OpenNext dev proxy.
+  try {
+    const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+    const ctx = await getCloudflareContext({ async: true });
+    const db = (ctx.env as unknown as Record<string, unknown>).DB as
+      | D1Database
+      | undefined;
+    if (db) {
+      return db;
+    }
+  } catch {
+    // Not running in a Cloudflare context.
+  }
+
+  throw new DbUnavailableError();
 }
 
 export async function saveDependencyTree(
@@ -59,6 +95,64 @@ export async function saveDependencyTree(
   return auditId;
 }
 
+export async function saveAuditReport(
+  db: D1Database,
+  input: {
+    name: string;
+    version: string;
+    source: string;
+    url: string;
+    prompt?: string;
+    model: string;
+    score: number;
+    resultJson: string;
+    cacheKey?: string;
+  },
+): Promise<{ auditId: number; reportId: number }> {
+  const insertAudit = db
+    .prepare(
+      `INSERT INTO package_audits (name, version, source, url) VALUES (?, ?, ?, ?)`,
+    )
+    .bind(input.name, input.version, input.source, input.url);
+
+  const auditResult = await insertAudit.run<{ id: number }>();
+  const auditId = auditResult.meta?.last_row_id as number | undefined;
+  if (!auditId) {
+    throw new Error("Failed to insert package audit.");
+  }
+
+  const insertReport = db
+    .prepare(
+      `INSERT INTO audit_reports (audit_id, prompt, model, score, result_json, cache_key) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      auditId,
+      input.prompt ?? null,
+      input.model,
+      input.score,
+      input.resultJson,
+      input.cacheKey ?? null,
+    );
+
+  const reportResult = await insertReport.run<{ id: number }>();
+  const reportId = reportResult.meta?.last_row_id as number | undefined;
+  if (!reportId) {
+    throw new Error("Failed to insert audit report.");
+  }
+
+  return { auditId, reportId };
+}
+
+export async function getAuditById(
+  db: D1Database,
+  id: number,
+): Promise<StoredAudit | null> {
+  return db
+    .prepare("SELECT * FROM package_audits WHERE id = ? LIMIT 1")
+    .bind(id)
+    .first<StoredAudit>();
+}
+
 export async function getAuditByUrl(
   db: D1Database,
   url: string,
@@ -67,6 +161,36 @@ export async function getAuditByUrl(
     .prepare("SELECT * FROM package_audits WHERE url = ? LIMIT 1")
     .bind(url)
     .first<StoredAudit>();
+}
+
+export async function getAuditReportById(
+  db: D1Database,
+  id: number,
+): Promise<StoredAuditReport | null> {
+  return db
+    .prepare("SELECT * FROM audit_reports WHERE id = ? LIMIT 1")
+    .bind(id)
+    .first<StoredAuditReport>();
+}
+
+export async function getAuditReportByAuditId(
+  db: D1Database,
+  auditId: number,
+): Promise<StoredAuditReport | null> {
+  return db
+    .prepare("SELECT * FROM audit_reports WHERE audit_id = ? LIMIT 1")
+    .bind(auditId)
+    .first<StoredAuditReport>();
+}
+
+export async function getAuditReportByCacheKey(
+  db: D1Database,
+  cacheKey: string,
+): Promise<StoredAuditReport | null> {
+  return db
+    .prepare("SELECT * FROM audit_reports WHERE cache_key = ? LIMIT 1")
+    .bind(cacheKey)
+    .first<StoredAuditReport>();
 }
 
 export async function getDependenciesByAuditId(

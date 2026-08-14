@@ -4,6 +4,10 @@ import {
   saveDependencyTree,
   type StoredDependency,
 } from "@/app/lib/db";
+import {
+  MissingInputError,
+  isAuditError,
+} from "@/app/lib/errors";
 
 interface DependencyTreeResponse {
   auditId: number;
@@ -55,10 +59,19 @@ function extractDependencies(
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { libraryUrl?: string };
-    const libraryUrl = body.libraryUrl?.trim();
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      throw new MissingInputError("Invalid JSON body.");
+    }
 
-    if (!libraryUrl) {
+    const libraryUrl =
+      body && typeof body === "object"
+        ? (body as { libraryUrl?: unknown }).libraryUrl
+        : undefined;
+
+    if (typeof libraryUrl !== "string" || libraryUrl.trim().length === 0) {
       return Response.json(
         { error: "libraryUrl is required." },
         { status: 400 },
@@ -66,7 +79,7 @@ export async function POST(request: Request) {
     }
 
     const db = await getDb();
-    const context = await resolveLibrary(libraryUrl);
+    const context = await resolveLibrary(libraryUrl.trim());
     const dependencies = extractDependencies(context);
 
     const auditId = await saveDependencyTree(
@@ -91,6 +104,17 @@ export async function POST(request: Request) {
 
     return Response.json(response);
   } catch (error) {
+    if (isAuditError(error)) {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (error.retryAfter) {
+        headers["Retry-After"] = String(error.retryAfter);
+      }
+      return Response.json(error.toJSON(), {
+        status: error.status,
+        headers,
+      });
+    }
+
     const message =
       error instanceof Error ? error.message : "An unexpected error occurred.";
     return Response.json({ error: message }, { status: 500 });

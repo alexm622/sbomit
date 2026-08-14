@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  UnsupportedSourceError,
+  PackageNotFoundError,
+  RepoNotFoundError,
+  UpstreamRateLimitError,
+} from "./errors";
 
 export const auditResultSchema = z.object({
   name: z.string(),
@@ -34,7 +40,8 @@ export type AuditResult = z.infer<typeof auditResultSchema>;
 
 interface NpmMetadata {
   name: string;
-  version: string;
+  version?: string;
+  "dist-tags"?: Record<string, string>;
   description?: string;
   license?: string | { type?: string };
   author?: { name?: string } | string;
@@ -71,9 +78,16 @@ export interface LibraryContext {
   metadata: NpmMetadata | GitHubRepo;
 }
 
+const MAX_RISKS = 20;
+const MAX_DEPENDENCIES = 500;
+const MAX_SUMMARY_LENGTH = 2000;
+const MAX_METADATA_BYTES = 8192;
+const MAX_PROMPT_LENGTH = 1000;
+
 function parseNpmUrl(url: string): string | null {
   try {
     const parsed = new URL(url);
+    if (!parsed.hostname.endsWith("npmjs.com")) return null;
     const match = parsed.pathname.match(/\/package\/(@[^/]+\/[^/]+|[^/]+)/);
     if (match) {
       return decodeURIComponent(match[1]);
@@ -98,6 +112,55 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   return null;
 }
 
+function parseRetryAfter(response: Response): number | undefined {
+  const header = response.headers.get("Retry-After");
+  if (!header) return undefined;
+  const seconds = parseInt(header, 10);
+  return Number.isNaN(seconds) ? undefined : seconds;
+}
+
+function truncateMetadata(metadata: unknown): string {
+  let text = JSON.stringify(metadata, null, 2);
+  if (text.length > MAX_METADATA_BYTES) {
+    text = text.slice(0, MAX_METADATA_BYTES) + "\n... [truncated]";
+  }
+  return text;
+}
+
+export function normalizePrompt(prompt?: string): string | undefined {
+  const trimmed = prompt?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, MAX_PROMPT_LENGTH);
+}
+
+export async function computeCacheKey(
+  context: LibraryContext,
+  prompt?: string,
+): Promise<string> {
+  const normalizedPrompt = normalizePrompt(prompt) || "";
+  const input = `${context.source}:${context.name}:${context.version}:${normalizedPrompt}`;
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(input),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export function buildAuditPrompt(
+  context: LibraryContext,
+  userPrompt?: string,
+): string {
+  const prompt = normalizePrompt(userPrompt);
+  const resolvedPrompt =
+    prompt ||
+    "Audit this library for security, license compatibility, and dependency risks. Return a concise, structured report.";
+
+  return `${resolvedPrompt}\n\nLibrary URL: ${context.url}\nSource: ${context.source}\nName: ${context.name}\nVersion: ${context.version}\n\nMetadata:\n\`\`\`json\n${truncateMetadata(context.metadata)}\n\`\`\``;
+}
+
 export async function resolveLibrary(
   libraryUrl: string,
 ): Promise<LibraryContext> {
@@ -108,14 +171,17 @@ export async function resolveLibrary(
       next: { revalidate: 0 },
     });
     if (!res.ok) {
-      throw new Error(`npm package not found: ${npmName}`);
+      if (res.status === 429) {
+        throw new UpstreamRateLimitError("npm registry", parseRetryAfter(res));
+      }
+      throw new PackageNotFoundError(npmName);
     }
     const data = (await res.json()) as NpmMetadata;
     return {
       source: "npm",
       url: libraryUrl,
       name: data.name,
-      version: data.version,
+      version: data.version ?? data["dist-tags"]?.latest ?? "latest",
       metadata: data,
     };
   }
@@ -133,7 +199,10 @@ export async function resolveLibrary(
       },
     );
     if (!res.ok) {
-      throw new Error(`GitHub repository not found: ${gh.owner}/${gh.repo}`);
+      if (res.status === 429 || res.status === 403) {
+        throw new UpstreamRateLimitError("GitHub API", parseRetryAfter(res));
+      }
+      throw new RepoNotFoundError(gh.owner, gh.repo);
     }
     const data = (await res.json()) as GitHubRepo;
     return {
@@ -145,7 +214,37 @@ export async function resolveLibrary(
     };
   }
 
-  throw new Error(
-    "Unsupported library URL. Provide an npm package URL or GitHub repository URL.",
-  );
+  throw new UnsupportedSourceError();
+}
+
+export function postProcessAuditResult(
+  result: AuditResult,
+  context: LibraryContext,
+): AuditResult {
+  // Clamp risk/dependency list lengths and summary size.
+  const risks = result.risks.slice(0, MAX_RISKS);
+  const dependencies = result.dependencies.slice(0, MAX_DEPENDENCIES);
+
+  // Deduplicate risks by title (case-insensitive) preserving order.
+  const seenTitles = new Set<string>();
+  const dedupedRisks = risks.filter((risk) => {
+    const key = risk.title.toLowerCase();
+    if (seenTitles.has(key)) return false;
+    seenTitles.add(key);
+    return true;
+  });
+
+  // Override name/version if the model drifted from resolved context.
+  const name = result.name || context.name;
+  const version = result.version || context.version;
+
+  return {
+    ...result,
+    name,
+    version,
+    score: Math.min(100, Math.max(0, Math.round(result.score))),
+    summary: result.summary.slice(0, MAX_SUMMARY_LENGTH),
+    risks: dedupedRisks,
+    dependencies,
+  };
 }

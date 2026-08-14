@@ -49,12 +49,12 @@ risk — and persists dependency trees for ongoing tracking.
 
 ### 3.1 MVP Polish (next up)
 
-- [ ] Persist full audit results to D1 (new `audit_reports` table) so reports
+- [x] Persist full audit results to D1 (new `audit_reports` table) so reports
       survive reloads and can be retrieved by ID.
 - [ ] Shareable report URLs (`/report/[id]`) backed by stored audits.
 - [ ] Basic request validation + rate limiting on API routes (per-IP token
       bucket; Cloudflare Workers compatible).
-- [ ] Error handling polish: typed error responses, user-friendly messages
+- [x] Error handling polish: typed error responses, user-friendly messages
       for npm 404s, GitHub rate limits, OpenAI failures.
 - [ ] Loading/empty states audit; accessibility pass on tabs and autocomplete.
 - [ ] `.dev.vars` / secrets documentation; `wrangler.jsonc` real `database_id`.
@@ -97,8 +97,8 @@ Current:
 
 Planned:
 
-- [ ] `audit_reports` — id, audit_id FK, prompt, model, score, result_json
-      (full structured output), created_at.
+- [x] `audit_reports` — id, audit_id FK, prompt, model, score, result_json
+      (full structured output), cache_key, created_at.
 - [ ] `watchlists` / `watchlist_packages` — v2 tracking.
 - [ ] `api_tokens` — v2 public API.
 - [ ] Migrations numbered sequentially (`0002_*.sql`, ...); applied via
