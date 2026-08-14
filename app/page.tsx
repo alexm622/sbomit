@@ -3,7 +3,6 @@
 import * as React from "react";
 import {
   Link as LinkIcon,
-  Shield,
   AlertTriangle,
   Package,
   Scale,
@@ -18,6 +17,7 @@ import {
   Zap,
   Lock,
   Database,
+  Ban,
 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
@@ -37,6 +37,12 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/app/components/ui/tabs";
+import { SiteHeader } from "@/app/components/site-header";
+import {
+  ElapsedTime,
+  displayUrlLabel,
+  useAuditJobs,
+} from "@/app/components/audit-jobs";
 
 interface Risk {
   severity: "critical" | "high" | "medium" | "low";
@@ -105,18 +111,42 @@ function normalizeUrl(value: string): string {
   return trimmed;
 }
 
-function displayUrlLabel(url: string): string {
-  return url
-    .replace("https://www.npmjs.com/package/", "npm:")
-    .replace("https://github.com/", "gh:");
-}
+const pipelineSteps = [
+  {
+    icon: Search,
+    label: "Resolving package metadata",
+    detail: "Fetching package data from the npm registry or GitHub API.",
+  },
+  {
+    icon: MessageSquare,
+    label: "Building the audit prompt",
+    detail: "Assembling a bounded metadata context plus your custom prompt.",
+  },
+  {
+    icon: Zap,
+    label: "Running the AI audit",
+    detail: "OpenAI generates a schema-validated security and license report.",
+  },
+  {
+    icon: CheckCircle2,
+    label: "Validating the result",
+    detail: "Parsing, clamping, and cross-checking the structured output.",
+  },
+  {
+    icon: Database,
+    label: "Saving the report",
+    detail: "Persisting the audit to D1 so it appears in your audit history.",
+  },
+];
 
 export default function Home() {
+  const { jobs, startAudit, cancelAudit } = useAuditJobs();
   const [libraryUrl, setLibraryUrl] = React.useState("");
   const [prompt, setPrompt] = React.useState("");
-  const [loading, setLoading] = React.useState(false);
+  const [activeJobId, setActiveJobId] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<AuditResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [cancelled, setCancelled] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState("overview");
   const [savingDeps, setSavingDeps] = React.useState(false);
   const [depsError, setDepsError] = React.useState<string | null>(null);
@@ -128,6 +158,11 @@ export default function Home() {
   const [showSuggestions, setShowSuggestions] = React.useState(false);
   const [highlightedIndex, setHighlightedIndex] = React.useState(-1);
   const suggestionsRef = React.useRef<HTMLDivElement>(null);
+
+  const activeJob = activeJobId
+    ? jobs.find((job) => job.id === activeJobId)
+    : undefined;
+  const loading = activeJob?.status === "running";
 
   React.useEffect(() => {
     const trimmed = libraryUrl.trim();
@@ -203,47 +238,40 @@ export default function Home() {
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (!libraryUrl.trim()) return;
-      setLoading(true);
       setResult(null);
       setError(null);
+      setCancelled(false);
       setDepsError(null);
       setSavedDeps(null);
 
       const normalizedUrl = normalizeUrl(libraryUrl);
 
-      try {
-        const res = await fetch("/api/audit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            libraryUrl: normalizedUrl,
-            prompt: prompt.trim() || undefined,
-          }),
-        });
+      const { jobId, done } = startAudit({
+        libraryUrl: normalizedUrl,
+        prompt: prompt.trim() || undefined,
+      });
+      setActiveJobId(jobId);
 
-        const data = (await res.json()) as {
-          result?: AuditResult;
-          error?: string;
-        };
+      const outcome = await done;
 
-        if (!res.ok || data.error) {
-          throw new Error(data.error || "Audit failed.");
-        }
-
-        if (!data.result) {
-          throw new Error("No audit result returned.");
-        }
-
-        setResult(data.result);
+      if (outcome.status === "completed") {
+        setResult(outcome.result);
         setActiveTab("overview");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Something went wrong.");
-      } finally {
-        setLoading(false);
+      } else if (outcome.status === "cancelled") {
+        setCancelled(true);
+      } else {
+        setError(outcome.error);
       }
+      setActiveJobId(null);
     },
-    [libraryUrl, prompt],
+    [libraryUrl, prompt, startAudit],
   );
+
+  const handleCancelAudit = React.useCallback(() => {
+    if (activeJobId) {
+      cancelAudit(activeJobId);
+    }
+  }, [activeJobId, cancelAudit]);
 
   const handleSaveDependencies = React.useCallback(async () => {
     if (!libraryUrl.trim()) return;
@@ -285,32 +313,7 @@ export default function Home() {
 
   return (
     <div className="flex min-h-full flex-col bg-background">
-      <header className="sticky top-0 z-40 border-b border-border/50 bg-background/80 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background">
-              <Shield className="h-5 w-5" />
-            </div>
-            <span className="text-lg font-bold tracking-tight">sbomit</span>
-          </div>
-          <nav className="hidden items-center gap-6 text-sm font-medium text-muted-foreground sm:flex">
-            <a href="#how-it-works" className="hover:text-foreground">
-              How it works
-            </a>
-            <a href="#" className="hover:text-foreground">
-              API
-            </a>
-            <a
-              href="https://github.com"
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-foreground"
-            >
-              GitHub
-            </a>
-          </nav>
-        </div>
-      </header>
+      <SiteHeader />
 
       <main className="flex-1">
         <section className="relative overflow-hidden">
@@ -461,6 +464,16 @@ export default function Home() {
                 </div>
               )}
 
+              {cancelled && (
+                <div className="mx-auto mt-4 flex max-w-2xl items-start gap-3 rounded-xl border border-border bg-muted/50 px-4 py-3 text-left text-muted-foreground">
+                  <Ban className="mt-0.5 h-5 w-5 shrink-0" />
+                  <p>
+                    Audit cancelled. No report was generated — start a new
+                    audit whenever you&apos;re ready.
+                  </p>
+                </div>
+              )}
+
               <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-sm text-muted-foreground">
                 <span>Try:</span>
                 {exampleUrls.map((url) => (
@@ -538,17 +551,85 @@ export default function Home() {
           </section>
         )}
 
-        {loading && (
+        {loading && activeJob && (
           <section className="mx-auto max-w-6xl px-4 pb-24 sm:px-6 lg:px-8">
-            <div className="mx-auto max-w-3xl text-center">
-              <Loader2 className="mx-auto h-10 w-10 animate-spin text-muted-foreground" />
-              <p className="mt-4 text-lg font-medium">
-                Analyzing library with AI...
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Fetching metadata and generating a structured audit report.
-              </p>
-            </div>
+            <Card className="mx-auto max-w-3xl">
+              <CardHeader>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="h-6 w-6 shrink-0 animate-spin text-primary" />
+                    <div>
+                      <CardTitle className="text-xl">
+                        Auditing {displayUrlLabel(activeJob.libraryUrl)}
+                      </CardTitle>
+                      <CardDescription>
+                        {activeJob.source === "npm"
+                          ? "npm package"
+                          : "GitHub repository"}{" "}
+                        · started{" "}
+                        {new Date(activeJob.startedAt).toLocaleTimeString()} ·
+                        elapsed{" "}
+                        <ElapsedTime
+                          since={activeJob.startedAt}
+                          className="tabular-nums"
+                        />
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Badge variant="secondary">{activeJob.source}</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {activeJob.prompt && (
+                  <div className="rounded-lg bg-muted/50 px-4 py-3 text-sm">
+                    <span className="font-medium">Custom prompt: </span>
+                    <span className="text-muted-foreground">
+                      {activeJob.prompt}
+                    </span>
+                  </div>
+                )}
+
+                <div>
+                  <p className="mb-3 text-sm font-medium">
+                    What&apos;s happening during this audit
+                  </p>
+                  <ol className="space-y-3">
+                    {pipelineSteps.map((step, index) => (
+                      <li key={step.label} className="flex items-start gap-3">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                          <step.icon className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">
+                            {index + 1}. {step.label}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            {step.detail}
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+
+                <div className="flex flex-col gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm text-muted-foreground">
+                    Most audits finish in 5–15 seconds. You can leave this page
+                    — the audit keeps running and is tracked on the Audits
+                    page.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleCancelAudit}
+                    className="shrink-0"
+                  >
+                    <Ban className="mr-2 h-4 w-4" />
+                    Cancel audit
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           </section>
         )}
 

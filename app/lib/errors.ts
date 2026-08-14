@@ -3,6 +3,7 @@ export type ErrorCode =
   | "UNSUPPORTED_SOURCE"
   | "PACKAGE_NOT_FOUND"
   | "REPO_NOT_FOUND"
+  | "REPORT_NOT_FOUND"
   | "UPSTREAM_RATE_LIMIT"
   | "AUDIT_PARSE_ERROR"
   | "DB_UNAVAILABLE"
@@ -62,6 +63,12 @@ export class RepoNotFoundError extends AuditError {
       `GitHub repository not found or private: ${owner}/${repo}`,
       404,
     );
+  }
+}
+
+export class ReportNotFoundError extends AuditError {
+  constructor(id: number) {
+    super("REPORT_NOT_FOUND", `Audit report not found: ${id}`, 404);
   }
 }
 

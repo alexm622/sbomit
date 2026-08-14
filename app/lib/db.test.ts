@@ -11,6 +11,8 @@ import {
   getAuditReportByAuditId,
   getAuditReportByCacheKey,
   getDependenciesByAuditId,
+  listAuditReports,
+  deleteAuditReport,
 } from "./db";
 import { DbUnavailableError } from "./errors";
 
@@ -134,5 +136,113 @@ describe("db helpers", () => {
 
     const reportByCache = await getAuditReportByCacheKey(db, "abc123");
     expect(reportByCache?.id).toBe(reportId);
+  });
+
+  it("listAuditReports returns report summaries newest first", async () => {
+    const first = await saveAuditReport(db, {
+      name: "lodash",
+      version: "4.17.21",
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      model: "gpt-4o-mini",
+      score: 85,
+      resultJson: JSON.stringify({ score: 85 }),
+    });
+    const second = await saveAuditReport(db, {
+      name: "react",
+      version: "latest",
+      source: "github",
+      url: "https://github.com/facebook/react",
+      prompt: "focus on license",
+      model: "gpt-4o-mini",
+      score: 92,
+      resultJson: JSON.stringify({ score: 92 }),
+    });
+
+    const reports = await listAuditReports(db);
+    expect(reports).toHaveLength(2);
+    expect(reports[0].id).toBe(second.reportId);
+    expect(reports[0].name).toBe("react");
+    expect(reports[0].source).toBe("github");
+    expect(reports[0].prompt).toBe("focus on license");
+    expect(reports[0].score).toBe(92);
+    expect(reports[1].id).toBe(first.reportId);
+    expect(reports[1].name).toBe("lodash");
+  });
+
+  it("listAuditReports respects the limit", async () => {
+    await saveAuditReport(db, {
+      name: "a",
+      version: "1.0.0",
+      source: "npm",
+      url: "https://www.npmjs.com/package/a",
+      model: "gpt-4o-mini",
+      score: 50,
+      resultJson: "{}",
+    });
+    await saveAuditReport(db, {
+      name: "b",
+      version: "1.0.0",
+      source: "npm",
+      url: "https://www.npmjs.com/package/b",
+      model: "gpt-4o-mini",
+      score: 60,
+      resultJson: "{}",
+    });
+
+    const reports = await listAuditReports(db, 1);
+    expect(reports).toHaveLength(1);
+    expect(reports[0].name).toBe("b");
+  });
+
+  it("deleteAuditReport removes the report and its audit row", async () => {
+    const { auditId, reportId } = await saveAuditReport(db, {
+      name: "lodash",
+      version: "4.17.21",
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      model: "gpt-4o-mini",
+      score: 85,
+      resultJson: "{}",
+    });
+
+    const deleted = await deleteAuditReport(db, reportId);
+    expect(deleted).toBe(true);
+
+    expect(await getAuditReportById(db, reportId)).toBeNull();
+    expect(await getAuditById(db, auditId)).toBeNull();
+  });
+
+  it("deleteAuditReport returns false for a missing report", async () => {
+    const deleted = await deleteAuditReport(db, 9999);
+    expect(deleted).toBe(false);
+  });
+
+  it("deleteAuditReport keeps the audit row when other reports reference it", async () => {
+    const { auditId, reportId } = await saveAuditReport(db, {
+      name: "lodash",
+      version: "4.17.21",
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      model: "gpt-4o-mini",
+      score: 85,
+      resultJson: "{}",
+    });
+
+    // Attach a second report to the same audit row.
+    const second = await db
+      .prepare(
+        `INSERT INTO audit_reports (audit_id, model, score, result_json) VALUES (?, ?, ?, ?)`,
+      )
+      .bind(auditId, "gpt-4o-mini", 70, "{}")
+      .run<{ id: number }>();
+    const secondReportId = second.meta?.last_row_id as number;
+
+    const deleted = await deleteAuditReport(db, reportId);
+    expect(deleted).toBe(true);
+
+    expect(await getAuditReportById(db, reportId)).toBeNull();
+    expect(await getAuditById(db, auditId)).not.toBeNull();
+    expect(await getAuditReportById(db, secondReportId)).not.toBeNull();
   });
 });

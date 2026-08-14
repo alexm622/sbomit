@@ -26,6 +26,19 @@ export interface StoredAuditReport {
   created_at: string;
 }
 
+export interface StoredAuditReportSummary {
+  id: number;
+  audit_id: number;
+  prompt: string | null;
+  model: string;
+  score: number;
+  created_at: string;
+  name: string;
+  version: string;
+  source: string;
+  url: string;
+}
+
 export async function getDb(env?: Record<string, unknown>): Promise<D1Database> {
   if (env) {
     const db = env.DB as D1Database | undefined;
@@ -191,6 +204,56 @@ export async function getAuditReportByCacheKey(
     .prepare("SELECT * FROM audit_reports WHERE cache_key = ? LIMIT 1")
     .bind(cacheKey)
     .first<StoredAuditReport>();
+}
+
+export async function listAuditReports(
+  db: D1Database,
+  limit = 100,
+): Promise<StoredAuditReportSummary[]> {
+  const result = await db
+    .prepare(
+      `SELECT r.id, r.audit_id, r.prompt, r.model, r.score, r.created_at,
+              a.name, a.version, a.source, a.url
+       FROM audit_reports r
+       JOIN package_audits a ON a.id = r.audit_id
+       ORDER BY r.created_at DESC, r.id DESC
+       LIMIT ?`,
+    )
+    .bind(limit)
+    .all<StoredAuditReportSummary>();
+  return result.results || [];
+}
+
+export async function deleteAuditReport(
+  db: D1Database,
+  reportId: number,
+): Promise<boolean> {
+  const report = await getAuditReportById(db, reportId);
+  if (!report) {
+    return false;
+  }
+
+  // Remove the report, then the parent audit row when no other reports
+  // reference it (its dependency rows cascade via FK / are removed first).
+  await db.batch([
+    db.prepare("DELETE FROM audit_reports WHERE id = ?").bind(reportId),
+    db
+      .prepare(
+        `DELETE FROM package_dependencies
+         WHERE audit_id = ?
+           AND NOT EXISTS (SELECT 1 FROM audit_reports WHERE audit_id = ?)`,
+      )
+      .bind(report.audit_id, report.audit_id),
+    db
+      .prepare(
+        `DELETE FROM package_audits
+         WHERE id = ?
+           AND NOT EXISTS (SELECT 1 FROM audit_reports WHERE audit_id = ?)`,
+      )
+      .bind(report.audit_id, report.audit_id),
+  ]);
+
+  return true;
 }
 
 export async function getDependenciesByAuditId(
