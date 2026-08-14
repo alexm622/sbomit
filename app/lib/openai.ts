@@ -3,7 +3,7 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import {
   auditResultSchema,
   type AuditResult,
-  type LibraryContext,
+  type EnrichedContext,
 } from "./audit";
 
 const openai = new OpenAI({
@@ -13,7 +13,7 @@ const openai = new OpenAI({
 const DEFAULT_PROMPT = `Audit this library for security, license compatibility, and dependency risks. Return a concise, structured report. The response must be valid JSON matching the requested schema.`;
 
 export async function runLibraryAudit(
-  context: LibraryContext,
+  enriched: EnrichedContext,
   userPrompt?: string,
 ): Promise<AuditResult> {
   const prompt = userPrompt?.trim() || DEFAULT_PROMPT;
@@ -28,7 +28,7 @@ export async function runLibraryAudit(
       },
       {
         role: "user",
-        content: `${prompt}\n\nLibrary URL: ${context.url}\nSource: ${context.source}\nName: ${context.name}\nVersion: ${context.version}\n\nMetadata:\n\`\`\`json\n${JSON.stringify(context.metadata, null, 2)}\n\`\`\``,
+        content: `${prompt}\n\nLibrary URL: ${enriched.context.url}\nSource: ${enriched.context.source}\nName: ${enriched.context.name}\nVersion: ${enriched.context.version}\n\nMetadata:\n\`\`\`json\n${JSON.stringify(enriched.context.metadata, null, 2)}\n\`\`\`\n\nKnown Vulnerabilities (OSV):\n\`\`\`json\n${JSON.stringify(enriched.vulnerabilities, null, 2)}\n\`\`\`${enriched.githubSignals ? `\n\nGitHub Signals:\n\`\`\`json\n${JSON.stringify(enriched.githubSignals, null, 2)}\n\`\`\`` : ""}`,
       },
     ],
     response_format: zodResponseFormat(auditResultSchema, "audit_result"),

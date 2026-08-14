@@ -8,6 +8,8 @@
     {
       "binding": "DB",
       "database_name": "sbomit-deps",
+      // Replace with your real D1 database ID from `wrangler d1 list`.
+      // For local dev with `wrangler dev` this can remain as a placeholder.
       "database_id": "<DATABASE_ID>",
       "migrations_dir": "./migrations"
     }

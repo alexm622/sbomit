@@ -1,0 +1,8 @@
+# Copy this file to .dev.vars and fill in real values.
+# .dev.vars is used by wrangler dev for local secrets and is not committed.
+
+# Required: OpenAI API key for AI-powered audits
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# Optional: GitHub personal access token for higher rate limits and deeper signals
+GITHUB_TOKEN=ghp-your-github-token-here

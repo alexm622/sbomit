@@ -1,9 +1,16 @@
-import { resolveLibrary, type LibraryContext } from "@/app/lib/audit";
+import {
+  normalizeLibraryUrl,
+  resolveLibrary,
+  type LibraryContext,
+} from "@/app/lib/audit";
+import { AppError, handleApiError } from "@/app/lib/errors";
 import {
   getDb,
   saveDependencyTree,
   type StoredDependency,
 } from "@/app/lib/db";
+import { checkRateLimit } from "@/app/lib/rate-limit";
+import { z } from "zod";
 
 interface DependencyTreeResponse {
   auditId: number;
@@ -14,9 +21,13 @@ interface DependencyTreeResponse {
   dependencies: StoredDependency[];
 }
 
-function extractDependencies(
-  context: LibraryContext,
-): StoredDependency[] {
+const dependencyRequestSchema = z.object({
+  libraryUrl: z.string().min(1, "libraryUrl is required"),
+});
+
+const RATE_LIMIT = { maxRequests: 20, windowMs: 60_000 };
+
+function extractDependencies(context: LibraryContext): StoredDependency[] {
   const deps: StoredDependency[] = [];
 
   if (context.source === "npm") {
@@ -55,15 +66,43 @@ function extractDependencies(
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { libraryUrl?: string };
-    const libraryUrl = body.libraryUrl?.trim();
-
-    if (!libraryUrl) {
+    const rateLimit = checkRateLimit(request, RATE_LIMIT);
+    if (!rateLimit.allowed) {
       return Response.json(
-        { error: "libraryUrl is required." },
-        { status: 400 },
+        {
+          error: {
+            code: "RATE_LIMITED",
+            message: "Too many requests. Please slow down.",
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
+            "X-RateLimit-Remaining": String(rateLimit.remaining),
+            "X-RateLimit-Reset": String(rateLimit.resetAt),
+          },
+        },
       );
     }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      throw new AppError("BAD_REQUEST", "Invalid JSON body.", 400);
+    }
+
+    const parsed = dependencyRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new AppError(
+        "BAD_REQUEST",
+        parsed.error.issues.map((e) => e.message).join("; "),
+        400,
+      );
+    }
+
+    const libraryUrl = normalizeLibraryUrl(parsed.data.libraryUrl.trim());
 
     const db = await getDb();
     const context = await resolveLibrary(libraryUrl);
@@ -89,10 +128,14 @@ export async function POST(request: Request) {
       dependencies,
     };
 
-    return Response.json(response);
+    return Response.json(response, {
+      headers: {
+        "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
+        "X-RateLimit-Remaining": String(rateLimit.remaining),
+        "X-RateLimit-Reset": String(rateLimit.resetAt),
+      },
+    });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "An unexpected error occurred.";
-    return Response.json({ error: message }, { status: 500 });
+    return handleApiError(error);
   }
 }

@@ -13,6 +13,17 @@ export interface StoredAudit {
   audited_at: string;
 }
 
+export interface StoredReport {
+  id: number;
+  audit_id: number;
+  public_id: string;
+  prompt: string | null;
+  model: string;
+  score: number;
+  result_json: string;
+  created_at: string;
+}
+
 export async function getDb(): Promise<D1Database> {
   const db = (process.env as Record<string, D1Database | undefined>).DB;
   if (!db) {
@@ -80,4 +91,60 @@ export async function getDependenciesByAuditId(
     .bind(auditId)
     .all<StoredDependency>();
   return result.results || [];
+}
+
+export async function saveReport(
+  db: D1Database,
+  auditId: number,
+  report: {
+    publicId: string;
+    prompt?: string;
+    model: string;
+    score: number;
+    resultJson: string;
+  },
+): Promise<string> {
+  await db
+    .prepare(
+      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      auditId,
+      report.publicId,
+      report.prompt ?? null,
+      report.model,
+      report.score,
+      report.resultJson,
+    )
+    .run();
+  return report.publicId;
+}
+
+export async function getReportByPublicId(
+  db: D1Database,
+  publicId: string,
+): Promise<StoredReport | null> {
+  return db
+    .prepare("SELECT * FROM audit_reports WHERE public_id = ? LIMIT 1")
+    .bind(publicId)
+    .first<StoredReport>();
+}
+
+export async function getRecentReportByUrl(
+  db: D1Database,
+  url: string,
+  ttlHours: number,
+): Promise<StoredReport | null> {
+  const result = await db
+    .prepare(
+      `SELECT r.* FROM audit_reports r
+       JOIN package_audits a ON r.audit_id = a.id
+       WHERE a.url = ? AND r.created_at > datetime('now', ?)
+       ORDER BY r.created_at DESC
+       LIMIT 1`,
+    )
+    .bind(url, `-${ttlHours} hours`)
+    .first<StoredReport>();
+  return result || null;
 }

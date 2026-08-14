@@ -4,60 +4,48 @@ import * as React from "react";
 import {
   Link as LinkIcon,
   Shield,
-  AlertTriangle,
-  Package,
-  Scale,
   ChevronRight,
   Loader2,
   CheckCircle2,
   XCircle,
-  Info,
   MessageSquare,
   Search,
   FileText,
   Zap,
-  Lock,
   Database,
+  Copy,
+  Check,
 } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
 import { Badge } from "@/app/components/ui/badge";
-import { Progress } from "@/app/components/ui/progress";
+
 import { cn } from "@/app/lib/utils";
+import { ReportView } from "@/app/components/report-view";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/app/components/ui/card";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/app/components/ui/tabs";
-
-interface Risk {
-  severity: "critical" | "high" | "medium" | "low";
-  title: string;
-  description: string;
-}
-
-interface Dependency {
-  name: string;
-  version: string;
-  license: string;
-  transitive: boolean;
-}
 
 interface AuditResult {
   name: string;
   version: string;
   score: number;
   summary: string;
-  risks: Risk[];
-  dependencies: Dependency[];
+  risks: Array<{
+    severity: "critical" | "high" | "medium" | "low";
+    title: string;
+    description: string;
+  }>;
+  dependencies: Array<{
+    name: string;
+    version: string;
+    license: string;
+    transitive: boolean;
+  }>;
   license: {
     type: string;
     compatible: boolean;
@@ -67,19 +55,6 @@ interface AuditResult {
   lastPublished: string;
   weeklyDownloads: string;
 }
-
-const severityVariant = {
-  critical: "destructive",
-  high: "destructive",
-  medium: "warning",
-  low: "secondary",
-} as const;
-
-const scoreVariant = (score: number) => {
-  if (score >= 80) return "success";
-  if (score >= 60) return "warning";
-  return "danger";
-};
 
 const exampleUrls = [
   "https://www.npmjs.com/package/lodash",
@@ -116,8 +91,10 @@ export default function Home() {
   const [prompt, setPrompt] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [result, setResult] = React.useState<AuditResult | null>(null);
+  const [reportId, setReportId] = React.useState<string | null>(null);
+  const [reportUrl, setReportUrl] = React.useState<string | null>(null);
+  const [copied, setCopied] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [activeTab, setActiveTab] = React.useState("overview");
   const [savingDeps, setSavingDeps] = React.useState(false);
   const [depsError, setDepsError] = React.useState<string | null>(null);
   const [savedDeps, setSavedDeps] = React.useState<{
@@ -205,6 +182,9 @@ export default function Home() {
       if (!libraryUrl.trim()) return;
       setLoading(true);
       setResult(null);
+      setReportId(null);
+      setReportUrl(null);
+      setCopied(false);
       setError(null);
       setDepsError(null);
       setSavedDeps(null);
@@ -223,11 +203,17 @@ export default function Home() {
 
         const data = (await res.json()) as {
           result?: AuditResult;
-          error?: string;
+          reportId?: string;
+          cached?: boolean;
+          error?: { message?: string } | string;
         };
 
         if (!res.ok || data.error) {
-          throw new Error(data.error || "Audit failed.");
+          const message =
+            typeof data.error === "string"
+              ? data.error
+              : data.error?.message || "Audit failed.";
+          throw new Error(message);
         }
 
         if (!data.result) {
@@ -235,7 +221,10 @@ export default function Home() {
         }
 
         setResult(data.result);
-        setActiveTab("overview");
+        setReportId(data.reportId || null);
+        if (data.reportId && typeof window !== "undefined") {
+          setReportUrl(`${window.location.origin}/report/${data.reportId}`);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong.");
       } finally {
@@ -260,17 +249,21 @@ export default function Home() {
         body: JSON.stringify({ libraryUrl: normalizedUrl }),
       });
 
-      const data = (await res.json()) as {
-        auditId?: number;
-        dependencies?: Array<Record<string, string>>;
-        error?: string;
-      };
+        const data = (await res.json()) as {
+          auditId?: number;
+          dependencies?: Array<Record<string, string>>;
+          error?: { message?: string } | string;
+        };
 
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Failed to save dependencies.");
-      }
+        if (!res.ok || data.error) {
+          const message =
+            typeof data.error === "string"
+              ? data.error
+              : data.error?.message || "Failed to save dependencies.";
+          throw new Error(message);
+        }
 
-      setSavedDeps({
+        setSavedDeps({
         auditId: data.auditId ?? 0,
         count: data.dependencies?.length ?? 0,
       });
@@ -554,224 +547,46 @@ export default function Home() {
 
         {result && (
           <section className="mx-auto max-w-6xl px-4 pb-24 sm:px-6 lg:px-8">
-            <div className="mb-6 flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
-                <Lock className="h-5 w-5" />
-              </div>
-              <div>
-                <h2 className="text-2xl font-bold tracking-tight">
-                  Audit report for {result.name}
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  Generated by OpenAI from public library metadata.
-                </p>
-              </div>
-            </div>
-
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="mb-6">
-                <TabsTrigger value="overview">Overview</TabsTrigger>
-                <TabsTrigger value="risks">
-                  Risks
-                  <Badge variant="secondary" className="ml-2">
-                    {result.risks.length}
-                  </Badge>
-                </TabsTrigger>
-                <TabsTrigger value="dependencies">Dependencies</TabsTrigger>
-                <TabsTrigger value="license">License</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="overview" className="space-y-6">
-                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardDescription>Trust Score</CardDescription>
-                      <div className="flex items-end gap-2">
-                        <CardTitle className="text-4xl">
-                          {result.score}
-                        </CardTitle>
-                        <span className="text-sm text-muted-foreground">
-                          /100
-                        </span>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <Progress
-                        value={result.score}
-                        variant={scoreVariant(result.score)}
-                      />
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardDescription>Version</CardDescription>
-                      <CardTitle className="text-2xl">
-                        {result.version}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-muted-foreground">
-                        Last published {result.lastPublished}
-                      </p>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardDescription>Weekly Downloads</CardDescription>
-                      <CardTitle className="text-2xl">
-                        {result.weeklyDownloads}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-muted-foreground">
-                        npm registry estimate
-                      </p>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardDescription>License</CardDescription>
-                      <CardTitle className="text-2xl">
-                        {result.license.type}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-muted-foreground">
-                        {result.license.compatible
-                          ? "Compatible"
-                          : "Review required"}
-                      </p>
-                    </CardContent>
-                  </Card>
+            {reportUrl && (
+              <div className="mb-6 rounded-xl border border-border bg-card p-4 shadow-sm">
+                <p className="mb-2 text-sm font-medium">Shareable report URL</p>
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={reportUrl}
+                    className="flex-1 truncate rounded-lg bg-muted px-3 py-2 text-sm text-primary hover:underline"
+                  >
+                    {reportUrl}
+                  </Link>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      navigator.clipboard.writeText(reportUrl);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                  >
+                    {copied ? (
+                      <Check className="mr-2 h-4 w-4" />
+                    ) : (
+                      <Copy className="mr-2 h-4 w-4" />
+                    )}
+                    {copied ? "Copied" : "Copy"}
+                  </Button>
                 </div>
+              </div>
+            )}
 
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Info className="h-5 w-5 text-muted-foreground" />
-                      AI Summary
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-base leading-7 text-foreground">
-                    {result.summary}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="risks" className="space-y-4">
-                {result.risks.map((risk, index) => (
-                  <Card key={index}>
-                    <CardHeader>
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex items-center gap-3">
-                          <AlertTriangle className="h-5 w-5 text-amber-500" />
-                          <CardTitle className="text-lg">
-                            {risk.title}
-                          </CardTitle>
-                        </div>
-                        <Badge variant={severityVariant[risk.severity]}>
-                          {risk.severity}
-                        </Badge>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-muted-foreground">
-                        {risk.description}
-                      </p>
-                    </CardContent>
-                  </Card>
-                ))}
-              </TabsContent>
-
-              <TabsContent value="dependencies">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Package className="h-5 w-5 text-muted-foreground" />
-                      Dependency Tree
-                    </CardTitle>
-                    <CardDescription>
-                      Direct and transitive dependencies identified by the
-                      audit.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="overflow-hidden rounded-lg border border-border">
-                      <table className="w-full text-sm">
-                        <thead className="bg-muted">
-                          <tr>
-                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                              Package
-                            </th>
-                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                              Version
-                            </th>
-                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                              License
-                            </th>
-                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                              Type
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border">
-                          {result.dependencies.map((dep) => (
-                            <tr key={`${dep.name}@${dep.version}`}>
-                              <td className="px-4 py-3 font-medium">
-                                {dep.name}
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {dep.version}
-                              </td>
-                              <td className="px-4 py-3">
-                                <Badge variant="outline">{dep.license}</Badge>
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {dep.transitive ? "Transitive" : "Direct"}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="license">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Scale className="h-5 w-5 text-muted-foreground" />
-                      License Analysis
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-6">
-                    <div className="flex items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
-                        <CheckCircle2 className="h-6 w-6" />
-                      </div>
-                      <div>
-                        <p className="text-lg font-semibold">
-                          {result.license.type} License
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          {result.license.compatible
-                            ? "Compatible with most projects"
-                            : "May conflict with your project license"}
-                        </p>
-                      </div>
-                    </div>
-                    <p className="leading-7 text-muted-foreground">
-                      {result.license.note}
-                    </p>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
+            <ReportView
+              report={{
+                id: reportId || "",
+                model: "gpt-4o-mini",
+                score: result.score,
+                createdAt: new Date().toISOString(),
+                result,
+              }}
+            />
           </section>
         )}
       </main>

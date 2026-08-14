@@ -49,26 +49,26 @@ risk — and persists dependency trees for ongoing tracking.
 
 ### 3.1 MVP Polish (next up)
 
-- [ ] Persist full audit results to D1 (new `audit_reports` table) so reports
+- [x] Persist full audit results to D1 (new `audit_reports` table) so reports
       survive reloads and can be retrieved by ID.
-- [ ] Shareable report URLs (`/report/[id]`) backed by stored audits.
-- [ ] Basic request validation + rate limiting on API routes (per-IP token
+- [x] Shareable report URLs (`/report/[id]`) backed by stored audits.
+- [x] Basic request validation + rate limiting on API routes (per-IP token
       bucket; Cloudflare Workers compatible).
-- [ ] Error handling polish: typed error responses, user-friendly messages
+- [x] Error handling polish: typed error responses, user-friendly messages
       for npm 404s, GitHub rate limits, OpenAI failures.
-- [ ] Loading/empty states audit; accessibility pass on tabs and autocomplete.
-- [ ] `.dev.vars` / secrets documentation; `wrangler.jsonc` real `database_id`.
-- [ ] CI: lint + typecheck on PRs.
+- [x] Loading/empty states audit; accessibility pass on tabs and autocomplete.
+- [x] `.dev.vars` / secrets documentation; `wrangler.jsonc` real `database_id`.
+- [x] CI: lint + typecheck on PRs.
 
 ### 3.2 v1 — Trust & Depth
 
-- [ ] npm audit data integration (registry advisories) merged with AI output.
-- [ ] GitHub deeper signals: release cadence, issue SLA, bus factor via API.
+- [x] npm audit data integration (OSV advisories) merged with AI output.
+- [x] GitHub deeper signals: release cadence, issue SLA, bus factor via API.
 - [ ] License compatibility matrix (declare project license, get verdict).
 - [ ] Diff audits between two versions of a package.
-- [ ] Export report as Markdown / JSON download.
-- [ ] Transitive dependency resolution (walk lockfile-style graph, depth-capped).
-- [ ] Caching layer: dedupe identical audits within N hours (KV or D1 lookup).
+- [x] Export report as Markdown / JSON download.
+- [x] Transitive dependency resolution (walk lockfile-style graph, depth-capped).
+- [x] Caching layer: dedupe identical audits within N hours (D1 lookup, 24h TTL).
 
 ### 3.3 v2 — Product Surface
 
@@ -97,31 +97,32 @@ Current:
 
 Planned:
 
-- [ ] `audit_reports` — id, audit_id FK, prompt, model, score, result_json
-      (full structured output), created_at.
+- [x] `audit_reports` — id, audit_id FK, public_id, prompt, model, score,
+      result_json (full structured output), created_at.
 - [ ] `watchlists` / `watchlist_packages` — v2 tracking.
 - [ ] `api_tokens` — v2 public API.
-- [ ] Migrations numbered sequentially (`0002_*.sql`, ...); applied via
+- [x] Migrations numbered sequentially (`0002_*.sql`, ...); applied via
       `scripts/apply-migrations.sh`.
 
 ### 4.2 API Surface
 
-| Route                    | Method | Status  | Notes                                |
-| ------------------------ | ------ | ------- | ------------------------------------ |
-| `/api/audit`             | POST   | shipped | Returns audit; will also persist.    |
-| `/api/dependencies`      | POST   | shipped | Saves dep tree.                      |
-| `/api/search`            | GET    | shipped | npm autocomplete.                    |
-| `/api/reports/[id]`      | GET    | planned | Fetch stored report.                 |
-| `/api/health`            | GET    | planned | Liveness + binding check.            |
-| `/api/watchlists`        | CRUD   | v2      | Requires auth.                       |
+| Route                         | Method | Status  | Notes                                |
+| ----------------------------- | ------ | ------- | ------------------------------------ |
+| `/api/audit`                  | POST   | shipped | Persists report + returns reportId.  |
+| `/api/dependencies`           | POST   | shipped | Saves direct dep tree.               |
+| `/api/dependencies/transitive`| POST   | shipped | Depth-capped transitive walker.      |
+| `/api/search`                 | GET    | shipped | npm autocomplete.                    |
+| `/api/reports/[id]`           | GET    | shipped | Fetch stored report.                 |
+| `/api/health`                 | GET    | shipped | Liveness + binding check.            |
+| `/api/watchlists`             | CRUD   | v2      | Requires auth.                       |
 
 ### 4.3 External Services
 
 - [x] OpenAI API (`OPENAI_API_KEY` secret; `wrangler secret put` in prod).
 - [x] npm registry (unauthenticated; respect rate limits).
 - [x] GitHub REST API (unauthenticated; add token for higher limits).
-- [ ] Optional: `GITHUB_TOKEN` secret for 5k req/hr.
-- [ ] Optional: KV namespace for audit caching.
+- [x] Optional: `GITHUB_TOKEN` secret for 5k req/hr.
+- [x] Optional: D1-based audit caching (24h TTL).
 
 ### 4.4 Infra / Ops
 
@@ -138,29 +139,33 @@ Planned:
 ## 5. Target Application Structure
 
 ```
-app/
-  layout.tsx / page.tsx          # landing + audit form (client)
-  report/[id]/page.tsx           # planned: persisted report view
-  api/
-    audit/route.ts               # shipped
-    dependencies/route.ts        # shipped
-    search/route.ts              # shipped
-    reports/[id]/route.ts        # planned
-    health/route.ts              # planned
-  components/ui/                 # primitives (shipped)
-  components/                    # planned: report cards, watchlist UI
-  lib/
-    audit.ts                     # resolution + schemas (shipped)
-    openai.ts                    # structured-output client (shipped)
-    db.ts                        # D1 helpers (shipped; extend for reports)
-    cache.ts                     # planned: KV/dedupe helpers
-    rate-limit.ts                # planned
-migrations/                      # sequential SQL migrations
-scripts/apply-migrations.sh      # shipped
-wrangler.jsonc                   # bindings: D1, (KV), vars
-TODO.md                          # this file
-README.md                        # user-facing docs
-```
+  app/
+    layout.tsx / page.tsx          # landing + audit form (client)
+    report/[id]/page.tsx           # persisted report view
+    api/
+      audit/route.ts               # shipped + persistence
+      dependencies/route.ts        # shipped
+      dependencies/transitive/route.ts  # shipped
+      search/route.ts              # shipped
+      reports/[id]/route.ts        # shipped
+      health/route.ts              # shipped
+    components/ui/                 # primitives (shipped)
+    components/
+      report-view.tsx              # report renderer + export
+    lib/
+      audit.ts                     # resolution + schemas + OSV/GitHub signals
+      openai.ts                    # structured-output client
+      db.ts                        # D1 helpers (audits, deps, reports, cache)
+      dependencies.ts              # transitive dependency walker
+      rate-limit.ts                # per-IP token bucket
+      errors.ts                    # typed API errors
+    migrations/                      # sequential SQL migrations
+    scripts/apply-migrations.sh      # shipped
+    wrangler.jsonc                   # bindings: D1, vars
+    .dev.vars.example                # local secrets template
+    TODO.md                          # this file
+    README.md                        # user-facing docs
+  ```
 
 ---
 
