@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sbomit",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sbomit-deps",
+      "database_id": "<DATABASE_ID>",
+      "migrations_dir": "./migrations"
+    }
+  ]
+}
