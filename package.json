@@ -7,9 +7,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typegen": "next typegen && wrangler types",
+    "typecheck": "npm run typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "clsx": "^2.1.1",
