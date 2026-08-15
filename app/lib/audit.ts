@@ -1,17 +1,68 @@
 import { z } from "zod";
+import {
+  UnsupportedSourceError,
+  PackageNotFoundError,
+  RepoNotFoundError,
+  UpstreamRateLimitError,
+} from "./errors";
+import type { CodebaseSnapshot } from "./codebase";
+import {
+  buildCodebaseSnapshot,
+  fetchGitHubTarball,
+  fetchNpmTarball,
+  formatSnapshotForLlm,
+  sourceTokenBudget,
+} from "./codebase";
+import type { Cve } from "./cve";
+import { computeScore } from "./score";
+import type { EnrichmentSignals } from "./signals";
+import { formatSignalsForPrompt } from "./signals";
+
+const riskSchema = z.object({
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  title: z.string(),
+  description: z.string(),
+});
+
+const investigationAreaSchema = z.object({
+  area: z.string(),
+  rationale: z.string(),
+  files: z.array(z.string()),
+});
+
+const deepDiveFindingSchema = z.object({
+  area: z.string(),
+  file: z.string(),
+  issue: z.string(),
+  evidence: z.string(),
+  severity: z.enum(["critical", "high", "medium", "low"]),
+});
+
+const cveSchema = z.object({
+  id: z.string(),
+  aliases: z.array(z.string()),
+  severity: z.enum(["critical", "high", "medium", "low"]).nullable(),
+  title: z.string(),
+  description: z.string(),
+  published: z.string().nullable(),
+  modified: z.string().nullable(),
+  fixedVersion: z.string().nullable(),
+  references: z.array(
+    z.object({
+      type: z.string().nullable(),
+      url: z.string(),
+    }),
+  ),
+});
 
 export const auditResultSchema = z.object({
   name: z.string(),
   version: z.string(),
   score: z.number().min(0).max(100),
   summary: z.string(),
-  risks: z.array(
-    z.object({
-      severity: z.enum(["critical", "high", "medium", "low"]),
-      title: z.string(),
-      description: z.string(),
-    }),
-  ),
+  risks: z.array(riskSchema),
+  investigationAreas: z.array(investigationAreaSchema),
+  deepDiveFindings: z.array(deepDiveFindingSchema),
   dependencies: z.array(
     z.object({
       name: z.string(),
@@ -28,13 +79,18 @@ export const auditResultSchema = z.object({
   maintainers: z.array(z.string()),
   lastPublished: z.string(),
   weeklyDownloads: z.string(),
+  cves: z.array(cveSchema),
 });
 
 export type AuditResult = z.infer<typeof auditResultSchema>;
+export type Risk = z.infer<typeof riskSchema>;
+export type InvestigationArea = z.infer<typeof investigationAreaSchema>;
+export type DeepDiveFinding = z.infer<typeof deepDiveFindingSchema>;
 
 interface NpmMetadata {
   name: string;
-  version: string;
+  version?: string;
+  "dist-tags"?: Record<string, string>;
   description?: string;
   license?: string | { type?: string };
   author?: { name?: string } | string;
@@ -48,7 +104,7 @@ interface NpmMetadata {
   optionalDependencies?: Record<string, string>;
   dist?: { tarball?: string };
   readme?: string;
-  downloads?: Array<{ downloads?: number; day?: string }>;
+  versions?: Record<string, NpmMetadata>;
 }
 
 interface GitHubRepo {
@@ -62,8 +118,15 @@ interface GitHubRepo {
   watchers_count: number;
   forks_count: number;
   open_issues_count: number;
+  default_branch?: string;
   owner: { login: string };
   html_url: string;
+  // Fetched separately from raw.githubusercontent.com so GitHub audits get
+  // dependency data comparable to npm audits.
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
 }
 
 export interface LibraryContext {
@@ -72,35 +135,42 @@ export interface LibraryContext {
   name: string;
   version: string;
   metadata: NpmMetadata | GitHubRepo;
+  codebase?: CodebaseSnapshot;
+  cves: Cve[];
+  signals?: EnrichmentSignals;
 }
 
-export interface OsvVulnerability {
-  id: string;
-  summary?: string;
-  details?: string;
-  severity?: string;
-  aliases?: string[];
+const MAX_RISKS = 20;
+const MAX_DEPENDENCIES = 500;
+const MAX_SUMMARY_LENGTH = 2000;
+const MAX_METADATA_BYTES = 8192;
+const MAX_PROMPT_LENGTH = 1000;
+const MAX_INVESTIGATION_AREAS = 10;
+const MAX_DEEP_DIVE_FINDINGS = 20;
+
+export interface ParsedNpmInput {
+  name: string;
+  version?: string;
 }
 
-export interface GitHubSignals {
-  releaseCadence?: string;
-  daysSinceLastRelease?: number;
-  issueSlaDays?: number;
-  busFactor?: number;
+export interface ParsedGitHubInput {
+  owner: string;
+  repo: string;
+  ref?: string;
 }
 
-export interface EnrichedContext {
-  context: LibraryContext;
-  vulnerabilities: OsvVulnerability[];
-  githubSignals: GitHubSignals | null;
-}
-
-function parseNpmUrl(url: string): string | null {
+function parseNpmUrl(url: string): ParsedNpmInput | null {
   try {
     const parsed = new URL(url);
-    const match = parsed.pathname.match(/\/package\/(@[^/]+\/[^/]+|[^/]+)/);
+    if (!parsed.hostname.endsWith("npmjs.com")) return null;
+    const match = parsed.pathname.match(
+      /\/package\/(@[^/]+\/[^/]+|[^/]+)(?:\/v\/)?([^/]+)?/,
+    );
     if (match) {
-      return decodeURIComponent(match[1]);
+      return {
+        name: decodeURIComponent(match[1]),
+        version: match[2] ? decodeURIComponent(match[2]) : undefined,
+      };
     }
   } catch {
     // ignore invalid URL
@@ -108,13 +178,43 @@ function parseNpmUrl(url: string): string | null {
   return null;
 }
 
-function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
+function parseNpmPackageName(input: string): ParsedNpmInput | null {
+  // Accepts bare package names like "lodash" or "lodash@4.17.20" (scoped packages too).
+  // Reject anything that looks like a URL.
+  if (input.includes(":") || /\s/.test(input)) return null;
+  const match = input.match(/^(@[^/]+\/[^/]+|[^@/]+)(?:@(.+))?$/);
+  if (match) {
+    return { name: match[1], version: match[2] };
+  }
+  return null;
+}
+
+export function normalizeLibraryUrl(input: string): string {
+  const trimmed = input.trim();
+  const npm = parseNpmUrl(trimmed) ?? parseNpmPackageName(trimmed);
+  if (npm) {
+    return `https://www.npmjs.com/package/${npm.name}`;
+  }
+  const gh = parseGitHubUrl(trimmed);
+  if (gh) {
+    return `https://github.com/${gh.owner}/${gh.repo}`;
+  }
+  return trimmed;
+}
+
+export function parseGitHubUrl(url: string): ParsedGitHubInput | null {
   try {
     const parsed = new URL(url);
     if (!parsed.hostname.endsWith("github.com")) return null;
     const parts = parsed.pathname.split("/").filter(Boolean);
     if (parts.length >= 2) {
-      return { owner: parts[0], repo: parts[1] };
+      const owner = parts[0];
+      const repo = parts[1];
+      // Support /tree/<ref> and /blob/<ref> paths.
+      if (parts.length >= 4 && (parts[2] === "tree" || parts[2] === "blob")) {
+        return { owner, repo, ref: parts[3] };
+      }
+      return { owner, repo };
     }
   } catch {
     // ignore invalid URL
@@ -122,244 +222,264 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   return null;
 }
 
-export function normalizeLibraryUrl(value: string): string {
-  const trimmed = value.trim();
-  // Allow bare npm package names, including scoped packages like @types/react.
-  if (/^(@[^/]+\/[^/]+|[^/\s:]+)$/.test(trimmed)) {
-    return `https://www.npmjs.com/package/${trimmed}`;
-  }
-  return trimmed;
+function parseRetryAfter(response: Response): number | undefined {
+  const header = response.headers.get("Retry-After");
+  if (!header) return undefined;
+  const seconds = parseInt(header, 10);
+  return Number.isNaN(seconds) ? undefined : seconds;
 }
 
-async function fetchNpmMetadata(name: string): Promise<NpmMetadata> {
-  const res = await fetch(`https://registry.npmjs.org/${name}`, {
-    headers: { Accept: "application/json" },
-    next: { revalidate: 0 },
-  });
-  if (!res.ok) {
-    if (res.status === 404) {
-      throw new Error(`npm package not found: ${name}`);
-    }
-    throw new Error(`npm registry error: ${res.status}`);
+function truncateMetadata(metadata: unknown): string {
+  let text = JSON.stringify(metadata, null, 2);
+  if (text.length > MAX_METADATA_BYTES) {
+    text = text.slice(0, MAX_METADATA_BYTES) + "\n... [truncated]";
   }
-  return res.json() as Promise<NpmMetadata>;
+  return text;
 }
 
-async function fetchGitHubRepo(
+export function normalizePrompt(prompt?: string): string | undefined {
+  const trimmed = prompt?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, MAX_PROMPT_LENGTH);
+}
+
+export async function computeCacheKey(
+  context: LibraryContext,
+  prompt?: string,
+): Promise<string> {
+  const normalizedPrompt = normalizePrompt(prompt) || "";
+  const budget = sourceTokenBudget();
+  const input = `${context.source}:${context.name}:${context.version}:${budget}:${normalizedPrompt}`;
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(input),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+interface GitHubPackageJson {
+  name?: string;
+  version?: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+}
+
+async function fetchGitHubPackageJson(
   owner: string,
   repo: string,
-): Promise<GitHubRepo> {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "sbomit-audit",
-  };
-  const token = process.env.GITHUB_TOKEN;
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
+  ref: string,
+): Promise<Partial<GitHubPackageJson> | undefined> {
+  try {
+    const res = await fetch(
+      `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/package.json`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "sbomit-audit",
+        },
+        next: { revalidate: 0 },
+      },
+    );
+    if (!res.ok) return undefined;
+    return (await res.json()) as Partial<GitHubPackageJson>;
+  } catch {
+    return undefined;
   }
-  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-    headers,
-    next: { revalidate: 0 },
-  });
-  if (!res.ok) {
-    if (res.status === 404) {
-      throw new Error(`GitHub repository not found: ${owner}/${repo}`);
-    }
-    if (res.status === 403) {
-      throw new Error(
-        `GitHub API rate limit hit. ${token ? "Token may be exhausted." : "Add a GITHUB_TOKEN secret for higher limits."}`,
-      );
-    }
-    throw new Error(`GitHub API error: ${res.status}`);
-  }
-  return res.json() as Promise<GitHubRepo>;
+}
+
+export function buildAuditPrompt(
+  context: LibraryContext,
+  userPrompt?: string,
+): string {
+  const prompt = normalizePrompt(userPrompt);
+  const resolvedPrompt =
+    prompt ||
+    "Audit this library for security, license compatibility, and dependency risks. Return a concise, structured report.";
+
+  const advisories = context.signals?.advisories ?? context.cves ?? [];
+  const cveSection =
+    advisories.length > 0
+      ? `\n\nKnown security advisories for ${context.name}@${context.version}:\n${advisories
+          .map(
+            (cve) =>
+              `- ${cve.id} (${cve.severity ?? "unknown"}): ${cve.title}` +
+              (cve.fixedVersion ? ` (fixed in ${cve.fixedVersion})` : ""),
+          )
+          .join("\n")}`
+      : "\n\nNo known security advisories were found for this version.";
+
+  const signalsSection = context.signals
+    ? `\n\nDeterministic enrichment signals:\n${formatSignalsForPrompt(context.signals)}`
+    : "";
+
+  return `${resolvedPrompt}\n\nLibrary URL: ${context.url}\nSource: ${context.source}\nName: ${context.name}\nVersion: ${context.version}${cveSection}${signalsSection}\n\nMetadata:\n\`\`\`json\n${truncateMetadata(context.metadata)}\n\`\`\``;
 }
 
 export async function resolveLibrary(
   libraryUrl: string,
+  requestedVersion?: string,
 ): Promise<LibraryContext> {
-  const normalized = normalizeLibraryUrl(libraryUrl);
-  const npmName = parseNpmUrl(normalized);
-  if (npmName) {
-    const data = await fetchNpmMetadata(npmName);
-    return {
-      source: "npm",
-      url: normalized,
-      name: data.name,
-      version: data.version,
-      metadata: data,
-    };
-  }
-
-  const gh = parseGitHubUrl(normalized);
-  if (gh) {
-    const data = await fetchGitHubRepo(gh.owner, gh.repo);
-    return {
-      source: "github",
-      url: normalized,
-      name: data.full_name,
-      version: "latest",
-      metadata: data,
-    };
-  }
-
-  throw new Error(
-    "Unsupported library URL. Provide an npm package URL, GitHub repository URL, or an npm package name.",
-  );
-}
-
-export async function fetchOsvVulnerabilities(
-  name: string,
-  version: string,
-): Promise<OsvVulnerability[]> {
-  try {
-    const res = await fetch("https://api.osv.dev/v1/query", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        package: { name, ecosystem: "npm" },
-        version,
-      }),
+  const npmInput = parseNpmUrl(libraryUrl) ?? parseNpmPackageName(libraryUrl);
+  if (npmInput) {
+    const version = requestedVersion ?? npmInput.version;
+    const res = await fetch(`https://registry.npmjs.org/${npmInput.name}`, {
+      headers: { Accept: "application/vnd.npm.install-v1+json" },
       next: { revalidate: 0 },
     });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { vulns?: OsvVulnerability[] };
-    return data.vulns || [];
-  } catch {
-    return [];
-  }
-}
-
-async function fetchGitHubReleases(
-  owner: string,
-  repo: string,
-): Promise<Array<{ published_at?: string; tag_name?: string }>> {
-  try {
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "sbomit-audit",
+    if (!res.ok) {
+      if (res.status === 429) {
+        throw new UpstreamRateLimitError("npm registry", parseRetryAfter(res));
+      }
+      throw new PackageNotFoundError(npmInput.name);
+    }
+    const data = (await res.json()) as NpmMetadata;
+    const resolvedVersion =
+      version ?? data["dist-tags"]?.latest ?? data.version ?? "latest";
+    const versionMetadata = data.versions?.[resolvedVersion] ?? data;
+    if (!versionMetadata || !versionMetadata.name) {
+      throw new PackageNotFoundError(npmInput.name);
+    }
+    return {
+      source: "npm",
+      url: libraryUrl,
+      name: data.name,
+      version: resolvedVersion,
+      metadata: versionMetadata,
+      cves: [],
     };
-    const token = process.env.GITHUB_TOKEN;
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/releases?per_page=10`,
-      { headers, next: { revalidate: 0 } },
-    );
-    if (!res.ok) return [];
-    return res.json() as Promise<Array<{ published_at?: string; tag_name?: string }>>;
-  } catch {
-    return [];
-  }
-}
-
-async function fetchGitHubIssuesStats(
-  owner: string,
-  repo: string,
-): Promise<{ avgCloseDays?: number; openCount?: number }> {
-  try {
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "sbomit-audit",
-    };
-    const token = process.env.GITHUB_TOKEN;
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/issues?state=closed&per_page=30&sort=updated`,
-      { headers, next: { revalidate: 0 } },
-    );
-    if (!res.ok) return {};
-    const issues = (await res.json()) as Array<{
-      created_at?: string;
-      closed_at?: string;
-    }>;
-    const closable = issues.filter((i) => i.created_at && i.closed_at);
-    if (closable.length === 0) return {};
-    const avgCloseDays =
-      closable.reduce((sum, i) => {
-        const created = new Date(i.created_at!).getTime();
-        const closed = new Date(i.closed_at!).getTime();
-        return sum + (closed - created) / (1000 * 60 * 60 * 24);
-      }, 0) / closable.length;
-    return { avgCloseDays: Math.round(avgCloseDays) };
-  } catch {
-    return {};
-  }
-}
-
-async function fetchGitHubContributors(
-  owner: string,
-  repo: string,
-): Promise<number> {
-  try {
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "sbomit-audit",
-    };
-    const token = process.env.GITHUB_TOKEN;
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contributors?per_page=1`,
-      { headers, next: { revalidate: 0 } },
-    );
-    if (!res.ok) return 0;
-    const link = res.headers.get("link") || "";
-    const match = link.match(/page=(\d+)[^>]*>;\s*rel="last"/);
-    if (match) return parseInt(match[1], 10);
-    const data = (await res.json()) as unknown[];
-    return data.length;
-  } catch {
-    return 0;
-  }
-}
-
-export async function enrichLibraryContext(
-  context: LibraryContext,
-): Promise<EnrichedContext> {
-  let vulnerabilities: OsvVulnerability[] = [];
-  let githubSignals: GitHubSignals | null = null;
-
-  if (context.source === "npm") {
-    vulnerabilities = await fetchOsvVulnerabilities(
-      context.name,
-      context.version,
-    );
   }
 
-  const gh = parseGitHubUrl(context.url);
+  const gh = parseGitHubUrl(libraryUrl);
   if (gh) {
-    const [releases, issueStats, contributors] = await Promise.all([
-      fetchGitHubReleases(gh.owner, gh.repo),
-      fetchGitHubIssuesStats(gh.owner, gh.repo),
-      fetchGitHubContributors(gh.owner, gh.repo),
-    ]);
+    const ref = requestedVersion ?? gh.ref;
+    const res = await fetch(
+      `https://api.github.com/repos/${gh.owner}/${gh.repo}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "sbomit-audit",
+        },
+        next: { revalidate: 0 },
+      },
+    );
+    if (!res.ok) {
+      if (res.status === 429 || res.status === 403) {
+        throw new UpstreamRateLimitError("GitHub API", parseRetryAfter(res));
+      }
+      throw new RepoNotFoundError(gh.owner, gh.repo);
+    }
+    const data = (await res.json()) as GitHubRepo;
+    const resolvedRef = ref ?? data.default_branch ?? "HEAD";
+    const manifest = await fetchGitHubPackageJson(
+      gh.owner,
+      gh.repo,
+      resolvedRef,
+    );
+    const metadata: GitHubRepo = {
+      ...data,
+      dependencies: manifest?.dependencies,
+      devDependencies: manifest?.devDependencies,
+      peerDependencies: manifest?.peerDependencies,
+      optionalDependencies: manifest?.optionalDependencies,
+    };
+    return {
+      source: "github",
+      url: libraryUrl,
+      name: data.full_name,
+      version: ref ?? "latest",
+      metadata,
+      cves: [],
+    };
+  }
 
-    let daysSinceLastRelease: number | undefined;
-    let releaseCadence: string | undefined;
-    if (releases.length > 1) {
-      const first = new Date(releases[0].published_at || Date.now()).getTime();
-      const last = new Date(
-        releases[releases.length - 1].published_at || Date.now(),
-      ).getTime();
-      const months = (first - last) / (1000 * 60 * 60 * 24 * 30);
-      const count = releases.length - 1;
-      releaseCadence = `${(months / count).toFixed(1)} months`;
-      daysSinceLastRelease = Math.floor(
-        (Date.now() - first) / (1000 * 60 * 60 * 24),
-      );
-    } else if (releases.length === 1) {
-      daysSinceLastRelease = Math.floor(
-        (Date.now() - new Date(releases[0].published_at || Date.now()).getTime()) /
-          (1000 * 60 * 60 * 24),
-      );
+  throw new UnsupportedSourceError();
+}
+
+export async function resolveCodebase(
+  context: LibraryContext,
+): Promise<CodebaseSnapshot | undefined> {
+  try {
+    if (context.source === "npm") {
+      const metadata = context.metadata as NpmMetadata;
+      const tarballUrl = metadata.dist?.tarball;
+      if (!tarballUrl) {
+        console.error("No tarball URL in npm metadata.");
+        return undefined;
+      }
+      const files = await fetchNpmTarball(tarballUrl);
+      return buildCodebaseSnapshot(files);
     }
 
-    githubSignals = {
-      releaseCadence,
-      daysSinceLastRelease,
-      issueSlaDays: issueStats.avgCloseDays,
-      busFactor: contributors,
-    };
-  }
+    const gh = parseGitHubUrl(context.url);
+    if (gh) {
+      const ref = context.version === "latest" ? "HEAD" : context.version;
+      const files = await fetchGitHubTarball(gh.owner, gh.repo, ref);
+      return buildCodebaseSnapshot(files);
+    }
 
-  return { context, vulnerabilities, githubSignals };
+    return undefined;
+  } catch (error) {
+    // Codebase inspection is best-effort; fall back to metadata-only audit.
+    console.error(
+      "Failed to resolve codebase:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return undefined;
+  }
+}
+
+export function buildCodebasePrompt(context: LibraryContext): string {
+  if (!context.codebase) return "";
+  return formatSnapshotForLlm(context.codebase);
+}
+
+export function postProcessAuditResult(
+  result: AuditResult,
+  context: LibraryContext,
+): AuditResult {
+  // Clamp list lengths and summary size.
+  const risks = result.risks.slice(0, MAX_RISKS);
+  const dependencies = result.dependencies.slice(0, MAX_DEPENDENCIES);
+  const investigationAreas = result.investigationAreas.slice(
+    0,
+    MAX_INVESTIGATION_AREAS,
+  );
+  const deepDiveFindings = result.deepDiveFindings.slice(
+    0,
+    MAX_DEEP_DIVE_FINDINGS,
+  );
+
+  // Deduplicate risks by title (case-insensitive) preserving order.
+  const seenTitles = new Set<string>();
+  const dedupedRisks = risks.filter((risk) => {
+    const key = risk.title.toLowerCase();
+    if (seenTitles.has(key)) return false;
+    seenTitles.add(key);
+    return true;
+  });
+
+  // Override name/version if the model drifted from resolved context.
+  const name = result.name || context.name;
+  const version = result.version || context.version;
+
+  // Compute the score deterministically from findings and signals instead of
+  // trusting the LLM, which has been defaulting to an overly narrow low range.
+  const score = computeScore(result, context, context.signals);
+
+  return {
+    ...result,
+    name,
+    version,
+    score,
+    summary: result.summary.slice(0, MAX_SUMMARY_LENGTH),
+    risks: dedupedRisks,
+    investigationAreas,
+    deepDiveFindings,
+    dependencies,
+  };
 }

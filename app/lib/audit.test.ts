@@ -1,86 +1,521 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
-  normalizeLibraryUrl,
-  auditResultSchema,
+  resolveLibrary,
+  postProcessAuditResult,
+  computeCacheKey,
+  normalizePrompt,
+  buildAuditPrompt,
+  type LibraryContext,
   type AuditResult,
 } from "./audit";
+import {
+  UnsupportedSourceError,
+  PackageNotFoundError,
+  RepoNotFoundError,
+  UpstreamRateLimitError,
+} from "./errors";
 
-describe("normalizeLibraryUrl", () => {
-  it("turns a bare npm package name into an npm URL", () => {
-    expect(normalizeLibraryUrl("lodash")).toBe(
-      "https://www.npmjs.com/package/lodash",
+const npmMetadata = {
+  name: "lodash",
+  "dist-tags": { latest: "4.17.21" },
+  time: {
+    created: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    modified: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    "4.17.21": new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+  },
+  versions: {
+    "4.17.21": {
+      name: "lodash",
+      version: "4.17.21",
+      description: "A modern JavaScript utility library.",
+      license: "MIT",
+      maintainers: [{ name: "jdalton", email: "john.david.dalton@gmail.com" }],
+      dependencies: {},
+      dist: { tarball: "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz" },
+    },
+  },
+};
+
+const githubMetadata = {
+  full_name: "facebook/react",
+  description: "A declarative, efficient, and flexible JavaScript library.",
+  license: { spdx_id: "MIT", name: "MIT License" },
+  created_at: "2013-05-24T16:15:54Z",
+  updated_at: "2024-01-01T00:00:00Z",
+  pushed_at: "2024-01-01T00:00:00Z",
+  stargazers_count: 220000,
+  watchers_count: 220000,
+  forks_count: 45000,
+  open_issues_count: 1200,
+  default_branch: "main",
+  owner: { login: "facebook" },
+  html_url: "https://github.com/facebook/react",
+};
+
+function mockFetch(
+  responses: Array<{ url: string | RegExp; response: Response }>,
+): typeof fetch {
+  return vi.fn(async (url: string) => {
+    const match = responses.find((r) =>
+      typeof r.url === "string" ? url === r.url : r.url.test(url),
+    );
+    if (!match) {
+      return new Response("Not Found", { status: 404 });
+    }
+    return match.response;
+  }) as unknown as typeof fetch;
+}
+
+describe("resolveLibrary", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("resolves an npm package URL", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/lodash",
+        response: new Response(JSON.stringify(npmMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary("https://www.npmjs.com/package/lodash");
+    expect(context.source).toBe("npm");
+    expect(context.name).toBe("lodash");
+    expect(context.version).toBe("4.17.21");
+  });
+
+  it("resolves a scoped npm package URL", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/@types/lodash",
+        response: new Response(
+          JSON.stringify({
+            name: "@types/lodash",
+            "dist-tags": { latest: "4.14.0" },
+            versions: {
+              "4.14.0": {
+                name: "@types/lodash",
+                version: "4.14.0",
+                dist: {
+                  tarball:
+                    "https://registry.npmjs.org/@types/lodash/-/lodash-4.14.0.tgz",
+                },
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+      },
+    ]);
+
+    const context = await resolveLibrary(
+      "https://www.npmjs.com/package/@types/lodash",
+    );
+    expect(context.source).toBe("npm");
+    expect(context.name).toBe("@types/lodash");
+    expect(context.version).toBe("4.14.0");
+  });
+
+  it("throws PackageNotFoundError for npm 404", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/not-a-real-pkg",
+        response: new Response("Not Found", { status: 404 }),
+      },
+    ]);
+
+    await expect(
+      resolveLibrary("https://www.npmjs.com/package/not-a-real-pkg"),
+    ).rejects.toBeInstanceOf(PackageNotFoundError);
+  });
+
+  it("throws UpstreamRateLimitError for npm 429", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/lodash",
+        response: new Response("Too Many Requests", {
+          status: 429,
+          headers: { "Retry-After": "60" },
+        }),
+      },
+    ]);
+
+    await expect(
+      resolveLibrary("https://www.npmjs.com/package/lodash"),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof UpstreamRateLimitError && err.retryAfter === 60,
     );
   });
 
-  it("preserves a full npm URL", () => {
-    expect(normalizeLibraryUrl("https://www.npmjs.com/package/lodash")).toBe(
-      "https://www.npmjs.com/package/lodash",
-    );
+  it("resolves a GitHub repository URL", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response(JSON.stringify(githubMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary("https://github.com/facebook/react");
+    expect(context.source).toBe("github");
+    expect(context.name).toBe("facebook/react");
+    expect(context.version).toBe("latest");
   });
 
-  it("preserves a GitHub URL", () => {
-    expect(normalizeLibraryUrl("https://github.com/facebook/react")).toBe(
+  it("throws RepoNotFoundError for GitHub 404", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/foo/bar",
+        response: new Response("Not Found", { status: 404 }),
+      },
+    ]);
+
+    await expect(
+      resolveLibrary("https://github.com/foo/bar"),
+    ).rejects.toBeInstanceOf(RepoNotFoundError);
+  });
+
+  it("throws UpstreamRateLimitError for GitHub 403", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response("API rate limit exceeded", { status: 403 }),
+      },
+    ]);
+
+    await expect(
+      resolveLibrary("https://github.com/facebook/react"),
+    ).rejects.toBeInstanceOf(UpstreamRateLimitError);
+  });
+
+  it("throws UnsupportedSourceError for unsupported URLs", async () => {
+    await expect(
+      resolveLibrary("https://example.com/package/foo"),
+    ).rejects.toBeInstanceOf(UnsupportedSourceError);
+  });
+
+  it("resolves a specific npm version when requested", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/lodash",
+        response: new Response(JSON.stringify(npmMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary(
+      "https://www.npmjs.com/package/lodash",
+      "4.17.21",
+    );
+    expect(context.version).toBe("4.17.21");
+  });
+
+  it("resolves a version from bare package@version input", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/lodash",
+        response: new Response(JSON.stringify(npmMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary("lodash@4.17.21");
+    expect(context.name).toBe("lodash");
+    expect(context.version).toBe("4.17.21");
+  });
+
+  it("resolves a specific GitHub ref when requested", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response(JSON.stringify(githubMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary(
       "https://github.com/facebook/react",
+      "v18.0.0",
     );
+    expect(context.source).toBe("github");
+    expect(context.version).toBe("v18.0.0");
   });
 
-  it("trims whitespace", () => {
-    expect(normalizeLibraryUrl("  lodash  ")).toBe(
-      "https://www.npmjs.com/package/lodash",
-    );
+  it("fetches package.json manifest for GitHub repos", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response(JSON.stringify(githubMetadata), { status: 200 }),
+      },
+      {
+        url: "https://raw.githubusercontent.com/facebook/react/main/package.json",
+        response: new Response(
+          JSON.stringify({
+            dependencies: { "object-assign": "^4.1.1" },
+            devDependencies: { jest: "^29.0.0" },
+          }),
+          { status: 200 },
+        ),
+      },
+    ]);
+
+    const context = await resolveLibrary("https://github.com/facebook/react");
+    const metadata = context.metadata as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    expect(metadata.dependencies).toEqual({ "object-assign": "^4.1.1" });
+    expect(metadata.devDependencies).toEqual({ jest: "^29.0.0" });
   });
 
-  it("handles scoped packages", () => {
-    expect(normalizeLibraryUrl("@types/react")).toBe(
-      "https://www.npmjs.com/package/@types/react",
-    );
+  it("handles missing package.json for GitHub repos gracefully", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response(JSON.stringify(githubMetadata), { status: 200 }),
+      },
+      {
+        url: "https://raw.githubusercontent.com/facebook/react/main/package.json",
+        response: new Response("Not Found", { status: 404 }),
+      },
+    ]);
+
+    const context = await resolveLibrary("https://github.com/facebook/react");
+    expect(context.source).toBe("github");
   });
 });
 
-describe("auditResultSchema", () => {
-  const validResult: AuditResult = {
+describe("computeCacheKey", () => {
+  it("returns a stable SHA-256 hex key", async () => {
+    const context: LibraryContext = {
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      name: "lodash",
+      version: "4.17.21",
+      metadata: npmMetadata,
+    cves: [],
+    };
+    const key1 = await computeCacheKey(context, "focus on security");
+    const key2 = await computeCacheKey(context, "focus on security");
+    expect(key1).toBe(key2);
+    expect(key1).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("produces different keys for different prompts", async () => {
+    const context: LibraryContext = {
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      name: "lodash",
+      version: "4.17.21",
+      metadata: npmMetadata,
+    cves: [],
+    };
+    const key1 = await computeCacheKey(context, "a");
+    const key2 = await computeCacheKey(context, "b");
+    expect(key1).not.toBe(key2);
+  });
+});
+
+describe("normalizePrompt", () => {
+  it("trims and caps prompts", () => {
+    expect(normalizePrompt("  focus  ")).toBe("focus");
+    expect(normalizePrompt("   ")).toBeUndefined();
+    expect(normalizePrompt("x".repeat(2000))).toHaveLength(1000);
+  });
+});
+
+describe("buildAuditPrompt", () => {
+  it("includes bounded metadata and prompt", () => {
+    const context: LibraryContext = {
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      name: "lodash",
+      version: "4.17.21",
+      metadata: npmMetadata,
+    cves: [],
+    };
+    const prompt = buildAuditPrompt(context, "focus");
+    expect(prompt).toContain("focus");
+    expect(prompt).toContain("lodash");
+    expect(prompt).toContain("4.17.21");
+    expect(prompt).toContain("Metadata:");
+  });
+
+  it("truncates oversized metadata", () => {
+    const context: LibraryContext = {
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      name: "lodash",
+      version: "4.17.21",
+      metadata: { ...npmMetadata, readme: "x".repeat(100_000) },
+      cves: [],
+    };
+    const prompt = buildAuditPrompt(context);
+    expect(prompt.length).toBeLessThan(12_000);
+    expect(prompt).toContain("[truncated]");
+  });
+});
+
+describe("postProcessAuditResult", () => {
+  const context: LibraryContext = {
+    source: "npm",
+    url: "https://www.npmjs.com/package/lodash",
     name: "lodash",
     version: "4.17.21",
-    score: 85,
-    summary: "A popular utility library.",
-    risks: [
-      {
-        severity: "low",
-        title: "Large maintainer surface",
-        description: "Many collaborators.",
-      },
-    ],
-    dependencies: [
-      { name: "foo", version: "1.0.0", license: "MIT", transitive: false },
-    ],
-    license: { type: "MIT", compatible: true, note: "Permissive license." },
-    maintainers: ["jdalton"],
-    lastPublished: "2021-02-01",
-    weeklyDownloads: "50M",
+      metadata: npmMetadata,
+      cves: [],
+    };
+
+  const baseResult: AuditResult = {
+    name: "lodash",
+    version: "4.17.21",
+    score: 85.7,
+    summary: "Looks good.",
+    risks: [],
+    investigationAreas: [],
+    deepDiveFindings: [],
+    dependencies: [],
+    license: { type: "MIT", compatible: true, note: "" },
+    maintainers: [],
+    lastPublished: "recently",
+    weeklyDownloads: "many",
+    cves: [],
   };
 
-  it("accepts a valid audit result", () => {
-    expect(() => auditResultSchema.parse(validResult)).not.toThrow();
+  it("computes a deterministic score from findings", () => {
+    const result = postProcessAuditResult(
+      { ...baseResult, score: 150.3 },
+      context,
+    );
+    // No risks/CVEs, compatible license, no source inspection, recent, no deps -> 80.
+    expect(result.score).toBe(80);
   });
 
-  it("rejects a score outside 0-100", () => {
-    expect(() =>
-      auditResultSchema.parse({ ...validResult, score: 101 }),
-    ).toThrow();
+  it("rewards source-code inspection with a higher score", () => {
+    const inspectedContext = {
+      ...context,
+      codebase: {
+        fileCount: 1,
+        totalSize: 100,
+        files: [{ path: "index.js", size: 100, content: "" }],
+      },
+    };
+    const result = postProcessAuditResult(baseResult, inspectedContext);
+    expect(result.score).toBe(100);
   });
 
-  it("rejects an invalid severity", () => {
-    expect(() =>
-      auditResultSchema.parse({
-        ...validResult,
-        risks: [{ severity: "extreme", title: "x", description: "y" }],
-      }),
-    ).toThrow();
+  it("lowers the score for CVEs and evidence-backed findings", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        cves: [
+          {
+            id: "CVE-1",
+            aliases: [],
+            severity: "high",
+            title: "Bad bug",
+            description: "desc",
+            published: null,
+            modified: null,
+            fixedVersion: "1.0.1",
+            references: [],
+          },
+        ],
+        deepDiveFindings: [
+          {
+            area: "Network",
+            file: "index.js",
+            issue: "Unexpected fetch",
+            evidence: "fetch(url)",
+            severity: "medium",
+          },
+        ],
+      },
+      context,
+    );
+    expect(result.score).toBeLessThan(80);
   });
 
-  it("rejects a missing required field", () => {
-    const rest = { ...validResult };
-    delete (rest as Partial<typeof rest>).summary;
-    expect(() => auditResultSchema.parse(rest)).toThrow();
+  it("penalizes incompatible licenses", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        license: { type: "GPL-3.0", compatible: false, note: "" },
+      },
+      context,
+    );
+    expect(result.score).toBe(70);
+  });
+
+  it("deduplicates risks by title", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        risks: [
+          { severity: "high", title: "Old dep", description: "a" },
+          { severity: "medium", title: "Old dep", description: "b" },
+          { severity: "low", title: "Other", description: "c" },
+        ],
+      },
+      context,
+    );
+    expect(result.risks).toHaveLength(2);
+    expect(result.risks[0].severity).toBe("high");
+  });
+
+  it("caps risks and dependencies", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        risks: Array.from({ length: 30 }, (_, i) => ({
+          severity: "low" as const,
+          title: `Risk ${i}`,
+          description: "d",
+        })),
+        dependencies: Array.from({ length: 600 }, (_, i) => ({
+          name: `pkg-${i}`,
+          version: "1.0.0",
+          license: "MIT",
+          transitive: false,
+        })),
+      },
+      context,
+    );
+    expect(result.risks).toHaveLength(20);
+    expect(result.dependencies).toHaveLength(500);
+  });
+
+  it("falls back to context name/version when empty", () => {
+    const result = postProcessAuditResult(
+      { ...baseResult, name: "", version: "" },
+      context,
+    );
+    expect(result.name).toBe("lodash");
+    expect(result.version).toBe("4.17.21");
+  });
+
+  it("caps investigation areas and deep dive findings", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        investigationAreas: Array.from({ length: 15 }, (_, i) => ({
+          area: `Area ${i}`,
+          rationale: "rationale",
+          files: ["file.js"],
+        })),
+        deepDiveFindings: Array.from({ length: 30 }, (_, i) => ({
+          area: "Area",
+          file: "file.js",
+          issue: `Issue ${i}`,
+          evidence: "evidence",
+          severity: "low" as const,
+        })),
+      },
+      context,
+    );
+    expect(result.investigationAreas).toHaveLength(10);
+    expect(result.deepDiveFindings).toHaveLength(20);
   });
 });

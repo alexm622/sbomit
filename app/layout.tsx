@@ -1,5 +1,7 @@
+import * as React from "react";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { AuditJobsProvider } from "@/app/components/audit-jobs";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -18,22 +20,19 @@ export const metadata: Metadata = {
     "Upload or search npm packages and get an AI-powered security, license, and dependency audit in seconds.",
 };
 
-export const viewport = {
-  width: "device-width",
-  initialScale: 1,
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#020617" },
-  ],
-};
-
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <AuditJobsProvider>{children}</AuditJobsProvider>
+      </body>
     </html>
   );
 }

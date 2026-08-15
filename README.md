@@ -5,7 +5,7 @@ AI-powered security audits for npm libraries and GitHub repositories. Paste a pa
 ## Features
 
 - **Instant audits** — Analyze any npm package or GitHub repo with a single request.
-- **AI-generated reports** — Uses OpenAI structured outputs (Zod schema) for consistent, machine-readable results.
+- **AI-generated reports** — Uses structured outputs (Zod schema) for consistent, machine-readable results.
 - **Trust score** — 0–100 score with severity-ranked risks.
 - **Dependency tree** — Save direct, dev, peer, and optional dependencies to a Cloudflare D1 database.
 - **Transitive dependency resolution** — Walk the npm dependency graph depth-capped up to 3 levels.
@@ -22,7 +22,7 @@ AI-powered security audits for npm libraries and GitHub repositories. Paste a pa
 - [React](https://react.dev) 19 + TypeScript
 - [Tailwind CSS](https://tailwindcss.com) v4
 - [Cloudflare Workers](https://workers.cloudflare.com) + [D1](https://developers.cloudflare.com/d1/)
-- [OpenAI](https://openai.com) GPT-4o-mini
+- LLM provider abstraction (OpenAI-compatible, Anthropic Claude, Google Gemini)
 
 ## Project Structure
 
@@ -41,7 +41,7 @@ app/
   lib/
     audit.ts              Library resolution (npm/GitHub) + Zod schemas
     db.ts                 D1 helpers
-    openai.ts             OpenAI structured-output client
+    llm.ts                LLM client (OpenAI-compatible, Claude, Gemini)
     dependencies.ts       Transitive dependency walker
     rate-limit.ts         Per-IP token bucket
     errors.ts             Typed API error helpers
@@ -59,7 +59,10 @@ wrangler.jsonc            Cloudflare Worker + D1 configuration
 - Node.js 20+
 - npm
 - A Cloudflare account
-- An [OpenAI API key](https://platform.openai.com/api-keys)
+- API keys for at least one supported LLM provider:
+  - [OpenAI](https://platform.openai.com/api-keys) or any OpenAI-compatible endpoint
+  - [Anthropic](https://console.anthropic.com/settings/keys) (Claude)
+  - [Google AI Studio](https://aistudio.google.com/app/apikey) (Gemini)
 
 ## Setup
 
@@ -75,11 +78,39 @@ wrangler.jsonc            Cloudflare Worker + D1 configuration
    cp .dev.vars.example .dev.vars
    ```
 
-   Edit `.dev.vars` and add your OpenAI key (and optional GitHub token for higher rate limits):
+   Edit `.dev.vars` and add your LLM credentials (and optional GitHub token for higher rate limits):
 
    ```bash
-   OPENAI_API_KEY=sk-your-openai-api-key-here
+   # Pick a provider: openai (default), anthropic, or google
+   LLM_PROVIDER=openai
+   LLM_API_KEY=sk-your-openai-api-key-here
+
+   # Optional: override the model or point to a custom OpenAI-compatible endpoint
+   # LLM_MODEL=gpt-4o-mini
+   # LLM_BASE_URL=https://api.openai.com/v1
+
+   # GitHub token (optional, raises rate limits)
    GITHUB_TOKEN=ghp-your-github-token-here
+   ```
+
+   Provider-specific examples:
+
+   ```bash
+   # Anthropic Claude
+   LLM_PROVIDER=anthropic
+   LLM_API_KEY=sk-ant-api03-...
+   LLM_MODEL=claude-3-5-sonnet-20241022
+
+   # Google Gemini
+   LLM_PROVIDER=google
+   LLM_API_KEY=...
+   LLM_MODEL=gemini-1.5-flash-latest
+
+   # Any OpenAI-compatible endpoint (e.g. OpenRouter, local llama.cpp)
+   LLM_PROVIDER=openai
+   LLM_API_KEY=...
+   LLM_BASE_URL=https://openrouter.ai/api/v1
+   LLM_MODEL=meta-llama/llama-3.1-70b-instruct
    ```
 
 3. Configure your D1 database in `wrangler.jsonc`:

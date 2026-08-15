@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
+    "types": ["node", "react", "react-dom", "@cloudflare/vitest-pool-workers/types"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -20,11 +21,11 @@
     ],
     "paths": {
       "@/*": ["./*"]
-    },
-    "types": ["@cloudflare/vitest-pool-workers/types"]
+    }
   },
   "include": [
     "next-env.d.ts",
+    "test-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
