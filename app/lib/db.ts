@@ -36,6 +36,7 @@ export interface StoredAuditReport {
   cache_key: string | null;
   interaction_json: string | null;
   codebase_inspected: number;
+  tokens_total: number | null;
   created_at: string;
 }
 
@@ -55,6 +56,7 @@ export interface StoredAuditReportSummary {
   provider: string | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  tokens_total: number | null;
   started_at: string | null;
   finished_at: string | null;
   codebase_inspected: number;
@@ -192,11 +194,41 @@ export async function saveDependencyTree(
   return auditId;
 }
 
+interface InteractionLike {
+  tokensInput?: number | null;
+  tokensOutput?: number | null;
+}
+
 function parseAuditResult(resultJson: string): AuditResult | undefined {
   try {
     return JSON.parse(resultJson) as AuditResult;
   } catch {
     return undefined;
+  }
+}
+
+function computeTokensTotal(interactionJson: string | undefined): number | null {
+  if (!interactionJson) return null;
+  try {
+    const parsed = JSON.parse(interactionJson) as
+      | InteractionLike
+      | InteractionLike[];
+    const interactions = Array.isArray(parsed) ? parsed : [parsed];
+    let total = 0;
+    let hasTokens = false;
+    for (const interaction of interactions) {
+      if (interaction.tokensInput != null) {
+        total += interaction.tokensInput;
+        hasTokens = true;
+      }
+      if (interaction.tokensOutput != null) {
+        total += interaction.tokensOutput;
+        hasTokens = true;
+      }
+    }
+    return hasTokens ? total : null;
+  } catch {
+    return null;
   }
 }
 
@@ -229,10 +261,11 @@ export async function saveAuditReport(
   }
 
   const publicId = generatePublicId();
+  const tokensTotal = computeTokensTotal(input.interactionJson);
 
   const insertReport = db
     .prepare(
-      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json, cache_key, interaction_json, codebase_inspected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json, cache_key, interaction_json, codebase_inspected, tokens_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       auditId,
@@ -244,6 +277,7 @@ export async function saveAuditReport(
       input.cacheKey ?? null,
       input.interactionJson ?? null,
       input.codebaseInspected ? 1 : 0,
+      tokensTotal,
     );
 
   const reportResult = await insertReport.run<{ id: number }>();
@@ -427,6 +461,7 @@ export async function listAuditReports(
               JSON_EXTRACT(r.interaction_json, '$.provider') AS provider,
               JSON_EXTRACT(r.interaction_json, '$.tokensInput') AS tokens_input,
               JSON_EXTRACT(r.interaction_json, '$.tokensOutput') AS tokens_output,
+              r.tokens_total,
               JSON_EXTRACT(r.interaction_json, '$.startedAt') AS started_at,
               JSON_EXTRACT(r.interaction_json, '$.finishedAt') AS finished_at,
               r.codebase_inspected

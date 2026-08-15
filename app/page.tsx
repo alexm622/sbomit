@@ -811,8 +811,8 @@ export default function Home() {
 
                 <div className="flex flex-col gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-sm text-muted-foreground">
-                    Most audits finish in 5–15 seconds. You can leave this page
-                    — the audit keeps running and is tracked on the Audits
+                    Most audits finish in up to 5 minutes. You can leave this
+                    page — the audit keeps running and is tracked on the Audits
                     page.
                   </p>
                   <Button

@@ -50,6 +50,7 @@ async function setupSchema(db: D1Database) {
       `cache_key TEXT UNIQUE,` +
       `interaction_json TEXT,` +
       `codebase_inspected INTEGER DEFAULT 0,` +
+      `tokens_total INTEGER,` +
       `created_at DATETIME DEFAULT CURRENT_TIMESTAMP,` +
       `FOREIGN KEY (audit_id) REFERENCES package_audits(id) ON DELETE CASCADE` +
       `);`,
@@ -376,6 +377,7 @@ describe("db helpers", () => {
     expect(reports[0].provider).toBe("openai");
     expect(reports[0].tokens_input).toBe(100);
     expect(reports[0].tokens_output).toBe(50);
+    expect(reports[0].tokens_total).toBe(150);
   });
 
   it("deleteAuditReport returns false for a missing report", async () => {
