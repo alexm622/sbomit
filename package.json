@@ -10,8 +10,13 @@
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
     "lint": "eslint",
+    "typegen": "next typegen && wrangler types",
+    "typecheck": "npm run typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -32,6 +37,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "miniflare": "^5.20260811.1-alpha",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.10",

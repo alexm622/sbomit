@@ -1,22 +1,32 @@
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const __dirname = import.meta.dirname;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [
-    cloudflareTest({
-      wrangler: { configPath: "./wrangler.jsonc" },
-      miniflare: {
-        compatibilityDate: "2026-08-01",
-        compatibilityFlags: ["nodejs_compat"],
-      },
+    cloudflareTest(async () => {
+      const migrationsPath = path.join(__dirname, "migrations");
+      const migrations = await readD1Migrations(migrationsPath);
+      return {
+        wrangler: { configPath: "./wrangler.jsonc" },
+        miniflare: {
+          compatibilityDate: "2026-08-01",
+          compatibilityFlags: ["nodejs_compat"],
+          bindings: { TEST_MIGRATIONS: migrations },
+        },
+      };
     }),
   ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "."),
     },
+  },
+  test: {
+    setupFiles: ["./test/apply-migrations.ts"],
+    globals: true,
   },
 });

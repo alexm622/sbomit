@@ -1,6 +1,15 @@
 import { DbUnavailableError } from "./errors";
 import type { AuditResult } from "./audit";
 
+function generatePublicId(): string {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  let id = "";
+  for (let i = 0; i < 12; i++) {
+    id += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return id;
+}
+
 export interface StoredDependency {
   name: string;
   version: string;
@@ -19,6 +28,7 @@ export interface StoredAudit {
 export interface StoredAuditReport {
   id: number;
   audit_id: number;
+  public_id: string;
   prompt: string | null;
   model: string;
   score: number;
@@ -28,6 +38,8 @@ export interface StoredAuditReport {
   codebase_inspected: number;
   created_at: string;
 }
+
+export type StoredReport = StoredAuditReport;
 
 export interface StoredAuditReportSummary {
   id: number;
@@ -216,12 +228,15 @@ export async function saveAuditReport(
     throw new Error("Failed to insert package audit.");
   }
 
+  const publicId = generatePublicId();
+
   const insertReport = db
     .prepare(
-      `INSERT INTO audit_reports (audit_id, prompt, model, score, result_json, cache_key, interaction_json, codebase_inspected) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json, cache_key, interaction_json, codebase_inspected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       auditId,
+      publicId,
       input.prompt ?? null,
       input.model,
       input.score,
@@ -575,4 +590,60 @@ export async function getAuditReportFindings(
     investigationFiles,
     dependencies,
   };
+}
+
+export async function saveReport(
+  db: D1Database,
+  auditId: number,
+  report: {
+    publicId: string;
+    prompt?: string;
+    model: string;
+    score: number;
+    resultJson: string;
+  },
+): Promise<string> {
+  await db
+    .prepare(
+      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      auditId,
+      report.publicId,
+      report.prompt ?? null,
+      report.model,
+      report.score,
+      report.resultJson,
+    )
+    .run();
+  return report.publicId;
+}
+
+export async function getReportByPublicId(
+  db: D1Database,
+  publicId: string,
+): Promise<StoredReport | null> {
+  return db
+    .prepare("SELECT * FROM audit_reports WHERE public_id = ? LIMIT 1")
+    .bind(publicId)
+    .first<StoredReport>();
+}
+
+export async function getRecentReportByUrl(
+  db: D1Database,
+  url: string,
+  ttlHours: number,
+): Promise<StoredReport | null> {
+  const result = await db
+    .prepare(
+      `SELECT r.* FROM audit_reports r
+       JOIN package_audits a ON r.audit_id = a.id
+       WHERE a.url = ? AND r.created_at > datetime('now', ?)
+       ORDER BY r.created_at DESC
+       LIMIT 1`,
+    )
+    .bind(url, `-${ttlHours} hours`)
+    .first<StoredReport>();
+  return result || null;
 }

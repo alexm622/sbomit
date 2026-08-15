@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS audit_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   audit_id INTEGER NOT NULL,
+  public_id TEXT NOT NULL UNIQUE,
   prompt TEXT,                  -- NULL when using the default prompt
   model TEXT NOT NULL,          -- e.g. "gpt-4o-mini"
   score INTEGER NOT NULL,
@@ -12,4 +13,5 @@ CREATE TABLE IF NOT EXISTS audit_reports (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_reports_audit_id ON audit_reports(audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_reports_public_id ON audit_reports(public_id);
 CREATE INDEX IF NOT EXISTS idx_audit_reports_cache_key ON audit_reports(cache_key);

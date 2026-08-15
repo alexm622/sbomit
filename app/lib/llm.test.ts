@@ -70,11 +70,11 @@ describe("runLibraryAudit", () => {
     mockParse.mockReset();
     process.env.LLM_PROVIDER = "openai";
     process.env.OPENAI_API_KEY = "sk-test";
-    delete process.env.LLM_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.GEMINI_API_KEY;
-    delete process.env.LLM_BASE_URL;
-    delete process.env.LLM_MODEL;
+    delete (process.env as Record<string, string | undefined>).LLM_API_KEY;
+    delete (process.env as Record<string, string | undefined>).ANTHROPIC_API_KEY;
+    delete (process.env as Record<string, string | undefined>).GEMINI_API_KEY;
+    delete (process.env as Record<string, string | undefined>).LLM_BASE_URL;
+    delete (process.env as Record<string, string | undefined>).LLM_MODEL;
   });
 
   it("returns parsed and post-processed result with OpenAI", async () => {
@@ -370,13 +370,13 @@ describe("runLibraryAudit", () => {
 
 describe("getLlmConfig", () => {
   beforeEach(() => {
-    delete process.env.LLM_PROVIDER;
-    delete process.env.LLM_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.GEMINI_API_KEY;
-    delete process.env.LLM_MODEL;
-    delete process.env.LLM_BASE_URL;
+    delete (process.env as Record<string, string | undefined>).LLM_PROVIDER;
+    delete (process.env as Record<string, string | undefined>).LLM_API_KEY;
+    delete (process.env as Record<string, string | undefined>).OPENAI_API_KEY;
+    delete (process.env as Record<string, string | undefined>).ANTHROPIC_API_KEY;
+    delete (process.env as Record<string, string | undefined>).GEMINI_API_KEY;
+    delete (process.env as Record<string, string | undefined>).LLM_MODEL;
+    delete (process.env as Record<string, string | undefined>).LLM_BASE_URL;
   });
 
   it("defaults to OpenAI with gpt-4o-mini", () => {

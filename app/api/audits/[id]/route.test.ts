@@ -42,6 +42,7 @@ async function setupSchema(db: D1Database) {
     `CREATE TABLE IF NOT EXISTS audit_reports (` +
       `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
       `audit_id INTEGER NOT NULL,` +
+      `public_id TEXT NOT NULL UNIQUE,` +
       `prompt TEXT,` +
       `model TEXT NOT NULL,` +
       `score INTEGER NOT NULL,` +
@@ -66,10 +67,11 @@ async function createReport(db: D1Database) {
 
   const report = await db
     .prepare(
-      `INSERT INTO audit_reports (audit_id, prompt, model, score, result_json, interaction_json) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json, interaction_json) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       auditId,
+      "report-1",
       null,
       "gpt-4o-mini",
       85,

@@ -189,6 +189,19 @@ function parseNpmPackageName(input: string): ParsedNpmInput | null {
   return null;
 }
 
+export function normalizeLibraryUrl(input: string): string {
+  const trimmed = input.trim();
+  const npm = parseNpmUrl(trimmed) ?? parseNpmPackageName(trimmed);
+  if (npm) {
+    return `https://www.npmjs.com/package/${npm.name}`;
+  }
+  const gh = parseGitHubUrl(trimmed);
+  if (gh) {
+    return `https://github.com/${gh.owner}/${gh.repo}`;
+  }
+  return trimmed;
+}
+
 export function parseGitHubUrl(url: string): ParsedGitHubInput | null {
   try {
     const parsed = new URL(url);

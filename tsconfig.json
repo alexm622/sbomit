@@ -21,7 +21,8 @@
     ],
     "paths": {
       "@/*": ["./*"]
-    }
+    },
+    "types": ["@cloudflare/vitest-pool-workers/types"]
   },
   "include": [
     "next-env.d.ts",

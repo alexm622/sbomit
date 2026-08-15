@@ -42,6 +42,7 @@ async function setupSchema(db: D1Database) {
     `CREATE TABLE IF NOT EXISTS audit_reports (` +
       `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
       `audit_id INTEGER NOT NULL,` +
+      `public_id TEXT NOT NULL UNIQUE,` +
       `prompt TEXT,` +
       `model TEXT NOT NULL,` +
       `score INTEGER NOT NULL,` +
@@ -396,9 +397,9 @@ describe("db helpers", () => {
     // Attach a second report to the same audit row.
     const second = await db
       .prepare(
-        `INSERT INTO audit_reports (audit_id, model, score, result_json) VALUES (?, ?, ?, ?)`,
+        `INSERT INTO audit_reports (audit_id, public_id, model, score, result_json) VALUES (?, ?, ?, ?, ?)`,
       )
-      .bind(auditId, "gpt-4o-mini", 70, "{}")
+      .bind(auditId, "second-report", "gpt-4o-mini", 70, "{}")
       .run<{ id: number }>();
     const secondReportId = second.meta?.last_row_id as number;
 

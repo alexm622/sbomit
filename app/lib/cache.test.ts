@@ -9,6 +9,7 @@ async function setupSchema(db: D1Database) {
     `CREATE TABLE IF NOT EXISTS audit_reports (` +
       `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
       `audit_id INTEGER NOT NULL,` +
+      `public_id TEXT NOT NULL UNIQUE,` +
       `prompt TEXT,` +
       `model TEXT NOT NULL,` +
       `score INTEGER NOT NULL,` +
@@ -80,10 +81,11 @@ describe("getCachedAuditReport", () => {
     const auditId = auditResult.meta?.last_row_id as number;
     await db
       .prepare(
-        "INSERT INTO audit_reports (audit_id, model, score, result_json, cache_key, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO audit_reports (audit_id, public_id, model, score, result_json, cache_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         auditId,
+        cacheKey,
         "gpt-4o-mini",
         80,
         "{}",

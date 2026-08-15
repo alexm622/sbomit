@@ -8,7 +8,11 @@ export type ErrorCode =
   | "RATE_LIMIT_EXCEEDED"
   | "AUDIT_PARSE_ERROR"
   | "DB_UNAVAILABLE"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "BAD_REQUEST"
+  | "NOT_FOUND"
+  | "RATE_LIMITED"
+  | "UPSTREAM_ERROR";
 
 export class AuditError extends Error {
   code: ErrorCode;
@@ -68,7 +72,7 @@ export class RepoNotFoundError extends AuditError {
 }
 
 export class ReportNotFoundError extends AuditError {
-  constructor(id: number) {
+  constructor(id: string | number) {
     super("REPORT_NOT_FOUND", `Audit report not found: ${id}`, 404);
   }
 }
@@ -114,4 +118,22 @@ export class DbUnavailableError extends AuditError {
 
 export function isAuditError(error: unknown): error is AuditError {
   return error instanceof AuditError;
+}
+
+export { AuditError as AppError };
+
+export function errorResponse(error: AuditError): Response {
+  return Response.json(
+    { error: error.message, code: error.code, ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}) },
+    { status: error.status },
+  );
+}
+
+export function handleApiError(error: unknown): Response {
+  if (error instanceof AuditError) {
+    return errorResponse(error);
+  }
+
+  const message = error instanceof Error ? error.message : "An unexpected error occurred.";
+  return errorResponse(new AuditError("INTERNAL_ERROR", message, 500));
 }
