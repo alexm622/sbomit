@@ -4,8 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "wrangler types",
     "build": "next build",
     "start": "next start",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
     "lint": "eslint",
     "typegen": "next typegen && wrangler types",
     "typecheck": "npm run typegen && tsc --noEmit",
@@ -27,6 +31,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.21.3",
+    "@opennextjs/cloudflare": "^1.20.2",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

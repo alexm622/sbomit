@@ -13,11 +13,18 @@ export default defineConfig({
       return {
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          compatibilityDate: "2026-08-01",
+          compatibilityFlags: ["nodejs_compat"],
           bindings: { TEST_MIGRATIONS: migrations },
         },
       };
     }),
   ],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "."),
+    },
+  },
   test: {
     setupFiles: ["./test/apply-migrations.ts"],
     globals: true,

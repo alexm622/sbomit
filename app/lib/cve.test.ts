@@ -1,0 +1,209 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  fetchNpmVulnerabilities,
+  fetchGitHubVulnerabilities,
+  fetchGitHubCommitForRef,
+  cveToText,
+} from "./cve";
+import { UpstreamRateLimitError } from "./errors";
+
+function mockFetch(
+  responses: Array<{ url: string | RegExp; response: Response }>,
+): typeof fetch {
+  return vi.fn(async (url: string) => {
+    const match = responses.find((r) =>
+      typeof r.url === "string" ? url === r.url : r.url.test(url),
+    );
+    if (!match) {
+      return new Response("Not Found", { status: 404 });
+    }
+    return match.response;
+  }) as unknown as typeof fetch;
+}
+
+const osvResponse = {
+  vulns: [
+    {
+      id: "GHSA-1234-5678-90ab",
+      aliases: ["CVE-2021-12345"],
+      summary: "Prototype pollution in lodash",
+      details: "A detailed description of the vulnerability.",
+      severity: [{ type: "CVSS_V3", score: "7.5" }],
+      published: "2021-01-01T00:00:00Z",
+      modified: "2021-02-01T00:00:00Z",
+      references: [{ type: "ADVISORY", url: "https://example.com/advisory" }],
+      affected: [
+        {
+          ranges: [
+            {
+              type: "GIT",
+              events: [{ introduced: "0" }, { fixed: "4.17.21" }],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+describe("fetchNpmVulnerabilities", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("queries OSV and returns normalized CVEs", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.osv.dev/v1/query",
+        response: new Response(JSON.stringify(osvResponse), { status: 200 }),
+      },
+    ]);
+
+    const cves = await fetchNpmVulnerabilities("lodash", "4.17.20");
+    expect(cves).toHaveLength(1);
+    expect(cves[0].id).toBe("GHSA-1234-5678-90ab");
+    expect(cves[0].aliases).toContain("CVE-2021-12345");
+    expect(cves[0].severity).toBe("high");
+    expect(cves[0].fixedVersion).toBe("4.17.21");
+  });
+
+  it("returns an empty array on OSV error", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.osv.dev/v1/query",
+        response: new Response("Server Error", { status: 500 }),
+      },
+    ]);
+
+    const cves = await fetchNpmVulnerabilities("lodash", "4.17.20");
+    expect(cves).toHaveLength(0);
+  });
+
+  it("throws UpstreamRateLimitError on OSV 429", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.osv.dev/v1/query",
+        response: new Response("Too Many Requests", {
+          status: 429,
+          headers: { "Retry-After": "30" },
+        }),
+      },
+    ]);
+
+    await expect(
+      fetchNpmVulnerabilities("lodash", "4.17.20"),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof UpstreamRateLimitError && err.retryAfter === 30,
+    );
+  });
+});
+
+describe("fetchGitHubCommitForRef", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("returns the commit sha for a ref", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: /api\.github\.com\/repos\/facebook\/react\/commits\/v18\.0\.0/,
+        response: new Response(JSON.stringify({ sha: "abc123" }), {
+          status: 200,
+        }),
+      },
+    ]);
+
+    const sha = await fetchGitHubCommitForRef("facebook", "react", "v18.0.0");
+    expect(sha).toBe("abc123");
+  });
+
+  it("returns undefined when the ref is not found", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: /api\.github\.com/,
+        response: new Response("Not Found", { status: 404 }),
+      },
+    ]);
+
+    const sha = await fetchGitHubCommitForRef("facebook", "react", "missing");
+    expect(sha).toBeUndefined();
+  });
+});
+
+describe("fetchGitHubVulnerabilities", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("resolves the ref to a commit and queries OSV", async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("api.github.com")) {
+        return new Response(JSON.stringify({ sha: "abc123" }), { status: 200 });
+      }
+      return new Response(JSON.stringify(osvResponse), { status: 200 });
+    });
+
+    const cves = await fetchGitHubVulnerabilities("facebook", "react", "v18.0.0");
+    expect(cves).toHaveLength(1);
+    expect(cves[0].id).toBe("GHSA-1234-5678-90ab");
+  });
+
+  it("returns an empty array when the commit cannot be resolved", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: /api\.github\.com/,
+        response: new Response("Not Found", { status: 404 }),
+      },
+    ]);
+
+    const cves = await fetchGitHubVulnerabilities("facebook", "react", "missing");
+    expect(cves).toHaveLength(0);
+  });
+});
+
+describe("cveToText", () => {
+  it("formats CVEs as a readable list", () => {
+    const text = cveToText([
+      {
+        id: "CVE-2021-12345",
+        aliases: [],
+        severity: "high",
+        title: "Prototype pollution",
+        description: "Details",
+        published: null,
+        modified: null,
+        fixedVersion: "4.17.21",
+        references: [],
+      },
+    ]);
+    expect(text).toContain("CVE-2021-12345");
+    expect(text).toContain("high");
+    expect(text).toContain("fixed in 4.17.21");
+  });
+
+  it("returns a friendly message when there are no CVEs", () => {
+    expect(cveToText([])).toContain("No known CVEs");
+  });
+});

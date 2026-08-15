@@ -1,16 +1,13 @@
-import {
-  normalizeLibraryUrl,
-  resolveLibrary,
-  type LibraryContext,
-} from "@/app/lib/audit";
-import { AppError, handleApiError } from "@/app/lib/errors";
+import { resolveLibrary, type LibraryContext } from "@/app/lib/audit";
 import {
   getDb,
   saveDependencyTree,
   type StoredDependency,
 } from "@/app/lib/db";
-import { checkRateLimit } from "@/app/lib/rate-limit";
-import { z } from "zod";
+import {
+  MissingInputError,
+  isAuditError,
+} from "@/app/lib/errors";
 
 interface DependencyTreeResponse {
   auditId: number;
@@ -21,91 +18,63 @@ interface DependencyTreeResponse {
   dependencies: StoredDependency[];
 }
 
-const dependencyRequestSchema = z.object({
-  libraryUrl: z.string().min(1, "libraryUrl is required"),
-});
-
-const RATE_LIMIT = { maxRequests: 20, windowMs: 60_000 };
-
-function extractDependencies(context: LibraryContext): StoredDependency[] {
+function extractDependencies(
+  context: LibraryContext,
+): StoredDependency[] {
   const deps: StoredDependency[] = [];
 
-  if (context.source === "npm") {
-    const metadata = context.metadata as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-      peerDependencies?: Record<string, string>;
-      optionalDependencies?: Record<string, string>;
-    };
+  const metadata = context.metadata as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  };
 
-    for (const [name, version] of Object.entries(metadata.dependencies || {})) {
-      deps.push({ name, version, dependency_type: "dependencies" });
-    }
-    for (const [name, version] of Object.entries(
-      metadata.devDependencies || {},
-    )) {
-      deps.push({ name, version, dependency_type: "devDependencies" });
-    }
-    for (const [name, version] of Object.entries(
-      metadata.peerDependencies || {},
-    )) {
-      deps.push({ name, version, dependency_type: "peerDependencies" });
-    }
-    for (const [name, version] of Object.entries(
-      metadata.optionalDependencies || {},
-    )) {
-      deps.push({ name, version, dependency_type: "optionalDependencies" });
-    }
+  for (const [name, version] of Object.entries(metadata.dependencies || {})) {
+    deps.push({ name, version, dependency_type: "dependencies" });
   }
-
-  // GitHub repos don't publish dependency manifests via the basic repo API,
-  // so we store an empty direct-dependency list for that source.
+  for (const [name, version] of Object.entries(
+    metadata.devDependencies || {},
+  )) {
+    deps.push({ name, version, dependency_type: "devDependencies" });
+  }
+  for (const [name, version] of Object.entries(
+    metadata.peerDependencies || {},
+  )) {
+    deps.push({ name, version, dependency_type: "peerDependencies" });
+  }
+  for (const [name, version] of Object.entries(
+    metadata.optionalDependencies || {},
+  )) {
+    deps.push({ name, version, dependency_type: "optionalDependencies" });
+  }
 
   return deps;
 }
 
 export async function POST(request: Request) {
   try {
-    const rateLimit = checkRateLimit(request, RATE_LIMIT);
-    if (!rateLimit.allowed) {
-      return Response.json(
-        {
-          error: {
-            code: "RATE_LIMITED",
-            message: "Too many requests. Please slow down.",
-          },
-        },
-        {
-          status: 429,
-          headers: {
-            "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
-            "X-RateLimit-Remaining": String(rateLimit.remaining),
-            "X-RateLimit-Reset": String(rateLimit.resetAt),
-          },
-        },
-      );
-    }
-
     let body: unknown;
     try {
       body = await request.json();
     } catch {
-      throw new AppError("BAD_REQUEST", "Invalid JSON body.", 400);
+      throw new MissingInputError("Invalid JSON body.");
     }
 
-    const parsed = dependencyRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new AppError(
-        "BAD_REQUEST",
-        parsed.error.issues.map((e) => e.message).join("; "),
-        400,
+    const libraryUrl =
+      body && typeof body === "object"
+        ? (body as { libraryUrl?: unknown }).libraryUrl
+        : undefined;
+
+    if (typeof libraryUrl !== "string" || libraryUrl.trim().length === 0) {
+      return Response.json(
+        { error: "libraryUrl is required." },
+        { status: 400 },
       );
     }
 
-    const libraryUrl = normalizeLibraryUrl(parsed.data.libraryUrl.trim());
-
     const db = await getDb();
-    const context = await resolveLibrary(libraryUrl);
+    const context = await resolveLibrary(libraryUrl.trim());
     const dependencies = extractDependencies(context);
 
     const auditId = await saveDependencyTree(
@@ -128,14 +97,21 @@ export async function POST(request: Request) {
       dependencies,
     };
 
-    return Response.json(response, {
-      headers: {
-        "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
-        "X-RateLimit-Remaining": String(rateLimit.remaining),
-        "X-RateLimit-Reset": String(rateLimit.resetAt),
-      },
-    });
+    return Response.json(response);
   } catch (error) {
-    return handleApiError(error);
+    if (isAuditError(error)) {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (error.retryAfter) {
+        headers["Retry-After"] = String(error.retryAfter);
+      }
+      return Response.json(error.toJSON(), {
+        status: error.status,
+        headers,
+      });
+    }
+
+    const message =
+      error instanceof Error ? error.message : "An unexpected error occurred.";
+    return Response.json({ error: message }, { status: 500 });
   }
 }

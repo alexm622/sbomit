@@ -62,7 +62,8 @@ risk — and persists dependency trees for ongoing tracking.
 
 ### 3.2 v1 — Trust & Depth
 
-- [x] npm audit data integration (OSV advisories) merged with AI output.
+- [x] npm audit data integration (OSV advisories / registry advisories) merged with AI output.
+- [x] GitHub manifest fetch (`package.json` from default branch) for dependency parity.
 - [x] GitHub deeper signals: release cadence, issue SLA, bus factor via API.
 - [ ] License compatibility matrix (declare project license, get verdict).
 - [ ] Diff audits between two versions of a package.
@@ -98,7 +99,7 @@ Current:
 Planned:
 
 - [x] `audit_reports` — id, audit_id FK, public_id, prompt, model, score,
-      result_json (full structured output), created_at.
+      result_json (full structured output), cache_key, created_at.
 - [ ] `watchlists` / `watchlist_packages` — v2 tracking.
 - [ ] `api_tokens` — v2 public API.
 - [x] Migrations numbered sequentially (`0002_*.sql`, ...); applied via
@@ -139,33 +140,37 @@ Planned:
 ## 5. Target Application Structure
 
 ```
-  app/
-    layout.tsx / page.tsx          # landing + audit form (client)
-    report/[id]/page.tsx           # persisted report view
-    api/
-      audit/route.ts               # shipped + persistence
-      dependencies/route.ts        # shipped
-      dependencies/transitive/route.ts  # shipped
-      search/route.ts              # shipped
-      reports/[id]/route.ts        # shipped
-      health/route.ts              # shipped
-    components/ui/                 # primitives (shipped)
-    components/
-      report-view.tsx              # report renderer + export
-    lib/
-      audit.ts                     # resolution + schemas + OSV/GitHub signals
-      openai.ts                    # structured-output client
-      db.ts                        # D1 helpers (audits, deps, reports, cache)
-      dependencies.ts              # transitive dependency walker
-      rate-limit.ts                # per-IP token bucket
-      errors.ts                    # typed API errors
-    migrations/                      # sequential SQL migrations
-    scripts/apply-migrations.sh      # shipped
-    wrangler.jsonc                   # bindings: D1, vars
-    .dev.vars.example                # local secrets template
-    TODO.md                          # this file
-    README.md                        # user-facing docs
-  ```
+app/
+  layout.tsx / page.tsx          # landing + audit form (client)
+  report/[id]/page.tsx           # shipped: persisted report view
+  audits/page.tsx                # shipped: history + inline report view
+  api/
+    audit/route.ts               # shipped
+    dependencies/route.ts        # shipped
+    dependencies/transitive/route.ts  # shipped
+    search/route.ts              # shipped
+    reports/[id]/route.ts        # shipped
+    audits/[id]/route.ts         # shipped
+    health/route.ts              # shipped
+  components/ui/                 # primitives (shipped)
+  components/                    # shipped: report-view, audit-jobs, site-header
+  lib/
+    audit.ts                     # resolution + schemas + OSV/GitHub signals
+    llm.ts                       # structured-output client (shipped)
+    db.ts                        # D1 helpers (audits, deps, reports, cache)
+    dependencies.ts              # transitive dependency walker
+    rate-limit.ts                # per-IP token bucket
+    errors.ts                    # typed API errors
+    signals.ts                   # shipped: enrichment signals
+    score.ts                     # shipped: deterministic scoring
+    cache.ts                     # shipped: D1 dedupe helpers
+migrations/                      # sequential SQL migrations
+scripts/apply-migrations.sh      # shipped
+wrangler.jsonc                   # bindings: D1, (KV), vars
+.dev.vars.example                # local secrets template
+TODO.md                          # this file
+README.md                        # user-facing docs
+```
 
 ---
 
