@@ -27,6 +27,7 @@ const baseResult: AuditResult = {
   maintainers: [],
   lastPublished: "recently",
   weeklyDownloads: "many",
+  cves: [],
 };
 
 const baseMeta = {

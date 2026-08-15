@@ -195,6 +195,50 @@ describe("resolveLibrary", () => {
       resolveLibrary("https://example.com/package/foo"),
     ).rejects.toBeInstanceOf(UnsupportedSourceError);
   });
+
+  it("resolves a specific npm version when requested", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/lodash",
+        response: new Response(JSON.stringify(npmMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary(
+      "https://www.npmjs.com/package/lodash",
+      "4.17.21",
+    );
+    expect(context.version).toBe("4.17.21");
+  });
+
+  it("resolves a version from bare package@version input", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://registry.npmjs.org/lodash",
+        response: new Response(JSON.stringify(npmMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary("lodash@4.17.21");
+    expect(context.name).toBe("lodash");
+    expect(context.version).toBe("4.17.21");
+  });
+
+  it("resolves a specific GitHub ref when requested", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response(JSON.stringify(githubMetadata), { status: 200 }),
+      },
+    ]);
+
+    const context = await resolveLibrary(
+      "https://github.com/facebook/react",
+      "v18.0.0",
+    );
+    expect(context.source).toBe("github");
+    expect(context.version).toBe("v18.0.0");
+  });
 });
 
 describe("computeCacheKey", () => {
@@ -205,6 +249,7 @@ describe("computeCacheKey", () => {
       name: "lodash",
       version: "4.17.21",
       metadata: npmMetadata,
+    cves: [],
     };
     const key1 = await computeCacheKey(context, "focus on security");
     const key2 = await computeCacheKey(context, "focus on security");
@@ -219,6 +264,7 @@ describe("computeCacheKey", () => {
       name: "lodash",
       version: "4.17.21",
       metadata: npmMetadata,
+    cves: [],
     };
     const key1 = await computeCacheKey(context, "a");
     const key2 = await computeCacheKey(context, "b");
@@ -242,6 +288,7 @@ describe("buildAuditPrompt", () => {
       name: "lodash",
       version: "4.17.21",
       metadata: npmMetadata,
+    cves: [],
     };
     const prompt = buildAuditPrompt(context, "focus");
     expect(prompt).toContain("focus");
@@ -257,6 +304,7 @@ describe("buildAuditPrompt", () => {
       name: "lodash",
       version: "4.17.21",
       metadata: { ...npmMetadata, readme: "x".repeat(100_000) },
+      cves: [],
     };
     const prompt = buildAuditPrompt(context);
     expect(prompt.length).toBeLessThan(12_000);
@@ -270,8 +318,9 @@ describe("postProcessAuditResult", () => {
     url: "https://www.npmjs.com/package/lodash",
     name: "lodash",
     version: "4.17.21",
-    metadata: npmMetadata,
-  };
+      metadata: npmMetadata,
+      cves: [],
+    };
 
   const baseResult: AuditResult = {
     name: "lodash",
@@ -286,6 +335,7 @@ describe("postProcessAuditResult", () => {
     maintainers: [],
     lastPublished: "recently",
     weeklyDownloads: "many",
+    cves: [],
   };
 
   it("clamps score to an integer 0-100", () => {

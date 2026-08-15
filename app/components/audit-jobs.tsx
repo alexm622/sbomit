@@ -10,6 +10,7 @@ export type AuditJobStatus = "running" | "completed" | "failed" | "cancelled";
 export interface AuditJob {
   id: string;
   libraryUrl: string;
+  version?: string;
   source: "npm" | "github";
   prompt?: string;
   status: AuditJobStatus;
@@ -46,7 +47,11 @@ export interface StartAuditHandle {
 
 interface AuditJobsContextValue {
   jobs: AuditJob[];
-  startAudit(input: { libraryUrl: string; prompt?: string }): StartAuditHandle;
+  startAudit(input: {
+    libraryUrl: string;
+    version?: string;
+    prompt?: string;
+  }): StartAuditHandle;
   cancelAudit(jobId: string): void;
   dismissJob(jobId: string): void;
 }
@@ -97,7 +102,11 @@ export function AuditJobsProvider({
   );
 
   const startAudit = React.useCallback(
-    (input: { libraryUrl: string; prompt?: string }): StartAuditHandle => {
+    (input: {
+      libraryUrl: string;
+      version?: string;
+      prompt?: string;
+    }): StartAuditHandle => {
       const jobId = createJobId();
       const controller = new AbortController();
       abortControllers.current.set(jobId, controller);
@@ -105,6 +114,7 @@ export function AuditJobsProvider({
       const job: AuditJob = {
         id: jobId,
         libraryUrl: input.libraryUrl,
+        version: input.version,
         source: sourceFromUrl(input.libraryUrl),
         prompt: input.prompt,
         status: "running",
@@ -120,6 +130,7 @@ export function AuditJobsProvider({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               libraryUrl: input.libraryUrl,
+              version: input.version,
               prompt: input.prompt,
             }),
             signal: controller.signal,

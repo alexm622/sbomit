@@ -13,6 +13,7 @@ import {
   formatSnapshotForLlm,
   sourceTokenBudget,
 } from "./codebase";
+import type { Cve } from "./cve";
 
 const riskSchema = z.object({
   severity: z.enum(["critical", "high", "medium", "low"]),
@@ -32,6 +33,23 @@ const deepDiveFindingSchema = z.object({
   issue: z.string(),
   evidence: z.string(),
   severity: z.enum(["critical", "high", "medium", "low"]),
+});
+
+const cveSchema = z.object({
+  id: z.string(),
+  aliases: z.array(z.string()),
+  severity: z.enum(["critical", "high", "medium", "low"]).nullable(),
+  title: z.string(),
+  description: z.string(),
+  published: z.string().nullable(),
+  modified: z.string().nullable(),
+  fixedVersion: z.string().nullable(),
+  references: z.array(
+    z.object({
+      type: z.string().nullable(),
+      url: z.string(),
+    }),
+  ),
 });
 
 export const auditResultSchema = z.object({
@@ -58,6 +76,7 @@ export const auditResultSchema = z.object({
   maintainers: z.array(z.string()),
   lastPublished: z.string(),
   weeklyDownloads: z.string(),
+  cves: z.array(cveSchema),
 });
 
 export type AuditResult = z.infer<typeof auditResultSchema>;
@@ -107,6 +126,7 @@ export interface LibraryContext {
   version: string;
   metadata: NpmMetadata | GitHubRepo;
   codebase?: CodebaseSnapshot;
+  cves: Cve[];
 }
 
 const MAX_RISKS = 20;
@@ -117,13 +137,29 @@ const MAX_PROMPT_LENGTH = 1000;
 const MAX_INVESTIGATION_AREAS = 10;
 const MAX_DEEP_DIVE_FINDINGS = 20;
 
-function parseNpmUrl(url: string): string | null {
+export interface ParsedNpmInput {
+  name: string;
+  version?: string;
+}
+
+export interface ParsedGitHubInput {
+  owner: string;
+  repo: string;
+  ref?: string;
+}
+
+function parseNpmUrl(url: string): ParsedNpmInput | null {
   try {
     const parsed = new URL(url);
     if (!parsed.hostname.endsWith("npmjs.com")) return null;
-    const match = parsed.pathname.match(/\/package\/(@[^/]+\/[^/]+|[^/]+)/);
+    const match = parsed.pathname.match(
+      /\/package\/(@[^/]+\/[^/]+|[^/]+)(?:\/v\/)?([^/]+)?/,
+    );
     if (match) {
-      return decodeURIComponent(match[1]);
+      return {
+        name: decodeURIComponent(match[1]),
+        version: match[2] ? decodeURIComponent(match[2]) : undefined,
+      };
     }
   } catch {
     // ignore invalid URL
@@ -131,13 +167,30 @@ function parseNpmUrl(url: string): string | null {
   return null;
 }
 
-function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
+function parseNpmPackageName(input: string): ParsedNpmInput | null {
+  // Accepts bare package names like "lodash" or "lodash@4.17.20" (scoped packages too).
+  // Reject anything that looks like a URL.
+  if (input.includes(":") || /\s/.test(input)) return null;
+  const match = input.match(/^(@[^/]+\/[^/]+|[^@/]+)(?:@(.+))?$/);
+  if (match) {
+    return { name: match[1], version: match[2] };
+  }
+  return null;
+}
+
+export function parseGitHubUrl(url: string): ParsedGitHubInput | null {
   try {
     const parsed = new URL(url);
     if (!parsed.hostname.endsWith("github.com")) return null;
     const parts = parsed.pathname.split("/").filter(Boolean);
     if (parts.length >= 2) {
-      return { owner: parts[0], repo: parts[1] };
+      const owner = parts[0];
+      const repo = parts[1];
+      // Support /tree/<ref> and /blob/<ref> paths.
+      if (parts.length >= 4 && (parts[2] === "tree" || parts[2] === "blob")) {
+        return { owner, repo, ref: parts[3] };
+      }
+      return { owner, repo };
     }
   } catch {
     // ignore invalid URL
@@ -192,15 +245,28 @@ export function buildAuditPrompt(
     prompt ||
     "Audit this library for security, license compatibility, and dependency risks. Return a concise, structured report.";
 
-  return `${resolvedPrompt}\n\nLibrary URL: ${context.url}\nSource: ${context.source}\nName: ${context.name}\nVersion: ${context.version}\n\nMetadata:\n\`\`\`json\n${truncateMetadata(context.metadata)}\n\`\`\``;
+  const cveSection =
+    context.cves.length > 0
+      ? `\n\nKnown security advisories for ${context.name}@${context.version}:\n${context.cves
+          .map(
+            (cve) =>
+              `- ${cve.id} (${cve.severity ?? "unknown"}): ${cve.title}` +
+              (cve.fixedVersion ? ` (fixed in ${cve.fixedVersion})` : ""),
+          )
+          .join("\n")}`
+      : "\n\nNo known security advisories were found for this version.";
+
+  return `${resolvedPrompt}\n\nLibrary URL: ${context.url}\nSource: ${context.source}\nName: ${context.name}\nVersion: ${context.version}${cveSection}\n\nMetadata:\n\`\`\`json\n${truncateMetadata(context.metadata)}\n\`\`\``;
 }
 
 export async function resolveLibrary(
   libraryUrl: string,
+  requestedVersion?: string,
 ): Promise<LibraryContext> {
-  const npmName = parseNpmUrl(libraryUrl);
-  if (npmName) {
-    const res = await fetch(`https://registry.npmjs.org/${npmName}`, {
+  const npmInput = parseNpmUrl(libraryUrl) ?? parseNpmPackageName(libraryUrl);
+  if (npmInput) {
+    const version = requestedVersion ?? npmInput.version;
+    const res = await fetch(`https://registry.npmjs.org/${npmInput.name}`, {
       headers: { Accept: "application/vnd.npm.install-v1+json" },
       next: { revalidate: 0 },
     });
@@ -208,22 +274,28 @@ export async function resolveLibrary(
       if (res.status === 429) {
         throw new UpstreamRateLimitError("npm registry", parseRetryAfter(res));
       }
-      throw new PackageNotFoundError(npmName);
+      throw new PackageNotFoundError(npmInput.name);
     }
     const data = (await res.json()) as NpmMetadata;
-    const version = data.version ?? data["dist-tags"]?.latest ?? "latest";
-    const versionMetadata = data.versions?.[version] ?? data;
+    const resolvedVersion =
+      version ?? data["dist-tags"]?.latest ?? data.version ?? "latest";
+    const versionMetadata = data.versions?.[resolvedVersion] ?? data;
+    if (!versionMetadata || !versionMetadata.name) {
+      throw new PackageNotFoundError(npmInput.name);
+    }
     return {
       source: "npm",
       url: libraryUrl,
       name: data.name,
-      version,
+      version: resolvedVersion,
       metadata: versionMetadata,
+      cves: [],
     };
   }
 
   const gh = parseGitHubUrl(libraryUrl);
   if (gh) {
+    const ref = requestedVersion ?? gh.ref;
     const res = await fetch(
       `https://api.github.com/repos/${gh.owner}/${gh.repo}`,
       {
@@ -245,8 +317,9 @@ export async function resolveLibrary(
       source: "github",
       url: libraryUrl,
       name: data.full_name,
-      version: "latest",
+      version: ref ?? "latest",
       metadata: data,
+      cves: [],
     };
   }
 
@@ -270,7 +343,8 @@ export async function resolveCodebase(
 
     const gh = parseGitHubUrl(context.url);
     if (gh) {
-      const files = await fetchGitHubTarball(gh.owner, gh.repo);
+      const ref = context.version === "latest" ? "HEAD" : context.version;
+      const files = await fetchGitHubTarball(gh.owner, gh.repo, ref);
       return buildCodebaseSnapshot(files);
     }
 

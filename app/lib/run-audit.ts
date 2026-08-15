@@ -1,10 +1,16 @@
 import {
   computeCacheKey,
+  parseGitHubUrl,
   resolveCodebase,
   resolveLibrary,
   type AuditResult,
   type LibraryContext,
 } from "./audit";
+import {
+  fetchGitHubVulnerabilities,
+  fetchNpmVulnerabilities,
+  type Cve,
+} from "./cve";
 import { getDb, saveAuditReport, type StoredAuditReport } from "./db";
 import { getLlmConfig, runLibraryAudit, type LlmInteraction } from "./llm";
 import { MissingInputError } from "./errors";
@@ -42,6 +48,7 @@ export type AuditEventHandler = (event: AuditEvent) => void | Promise<void>;
 
 export interface RunAuditInput {
   libraryUrl: string;
+  version?: string;
   prompt?: string;
 }
 
@@ -58,12 +65,13 @@ export interface RunAuditResult {
 
 export function parseRequestBody(
   body: unknown,
-): { libraryUrl: string; prompt?: string } {
+): { libraryUrl: string; version?: string; prompt?: string } {
   if (!body || typeof body !== "object") {
     throw new MissingInputError();
   }
-  const { libraryUrl, prompt } = body as {
+  const { libraryUrl, version, prompt } = body as {
     libraryUrl?: unknown;
+    version?: unknown;
     prompt?: unknown;
   };
   if (typeof libraryUrl !== "string" || libraryUrl.trim().length === 0) {
@@ -71,6 +79,10 @@ export function parseRequestBody(
   }
   return {
     libraryUrl: libraryUrl.trim(),
+    version:
+      typeof version === "string" && version.trim().length > 0
+        ? version.trim()
+        : undefined,
     prompt: typeof prompt === "string" ? prompt : undefined,
   };
 }
@@ -134,30 +146,59 @@ async function emitEta(
   });
 }
 
+async function fetchCves(context: LibraryContext): Promise<Cve[]> {
+  try {
+    if (context.source === "npm") {
+      return await fetchNpmVulnerabilities(context.name, context.version);
+    }
+    const gh = parseGitHubUrl(context.url);
+    if (gh) {
+      return await fetchGitHubVulnerabilities(
+        gh.owner,
+        gh.repo,
+        context.version,
+      );
+    }
+    return [];
+  } catch (error) {
+    // CVE fetching is best-effort; do not fail the audit if OSV is down.
+    console.error(
+      "Failed to fetch CVEs:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return [];
+  }
+}
+
 export async function runAudit(
   input: RunAuditInput,
   onEvent?: AuditEventHandler,
 ): Promise<RunAuditResult> {
-  const { libraryUrl, prompt } = input;
+  const { libraryUrl, version, prompt } = input;
   const startedAt = Date.now();
 
   await emitStep(onEvent, "resolve", "started");
-  const context = await resolveLibrary(libraryUrl);
+  const context = await resolveLibrary(libraryUrl, version);
   await emitStep(onEvent, "resolve", "completed", context.name);
 
   await emitStep(onEvent, "download", "started");
   const codebase = await resolveCodebase(context);
   const codebaseInspected = !!codebase && codebase.files.length > 0;
-  const fullContext: LibraryContext = codebase
-    ? { ...context, codebase }
-    : context;
+  const cves = await fetchCves(context);
+  const fullContext: LibraryContext = {
+    ...context,
+    cves,
+    ...(codebase ? { codebase } : {}),
+  };
   await emitStep(
     onEvent,
     "download",
     "completed",
     codebase
-      ? `${codebase.fileCount} files, ${codebase.totalSize} bytes`
-      : "metadata only",
+      ? `${codebase.fileCount} files, ${codebase.totalSize} bytes${cves.length > 0 ? `, ${cves.length} CVEs` : ""}`
+      : cves.length > 0
+        ? `metadata only, ${cves.length} CVEs`
+        : "metadata only",
   );
 
   const db = await getDb();

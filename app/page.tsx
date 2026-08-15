@@ -18,6 +18,8 @@ import {
   Lock,
   Database,
   Ban,
+  Tag,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
@@ -90,6 +92,19 @@ interface AuditResult {
   maintainers: string[];
   lastPublished: string;
   weeklyDownloads: string;
+  cves: Cve[];
+}
+
+interface Cve {
+  id: string;
+  aliases: string[];
+  severity: "critical" | "high" | "medium" | "low" | null;
+  title: string;
+  description: string;
+  published: string | null;
+  modified: string | null;
+  fixedVersion: string | null;
+  references: Array<{ type: string | null; url: string }>;
 }
 
 const severityVariant = {
@@ -176,6 +191,7 @@ const pipelineSteps: {
 export default function Home() {
   const { jobs, startAudit, cancelAudit } = useAuditJobs();
   const [libraryUrl, setLibraryUrl] = React.useState("");
+  const [version, setVersion] = React.useState("");
   const [prompt, setPrompt] = React.useState("");
   const [activeJobId, setActiveJobId] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<AuditResult | null>(null);
@@ -279,9 +295,11 @@ export default function Home() {
       setSavedDeps(null);
 
       const normalizedUrl = normalizeUrl(libraryUrl);
+      const normalizedVersion = version.trim() || undefined;
 
       const { jobId, done } = startAudit({
         libraryUrl: normalizedUrl,
+        version: normalizedVersion,
         prompt: prompt.trim() || undefined,
       });
       setActiveJobId(jobId);
@@ -298,7 +316,7 @@ export default function Home() {
       }
       setActiveJobId(null);
     },
-    [libraryUrl, prompt, startAudit],
+    [libraryUrl, version, prompt, startAudit],
   );
 
   const handleCancelAudit = React.useCallback(() => {
@@ -421,6 +439,16 @@ export default function Home() {
                         ))}
                       </div>
                     )}
+                  </div>
+
+                  <div className="relative">
+                    <Tag className="absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={version}
+                      onChange={(e) => setVersion(e.target.value)}
+                      placeholder="Version (optional), e.g. 4.17.20"
+                      className="h-12 border-0 bg-muted/50 pl-11 text-base text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                    />
                   </div>
 
                   <div className="relative">
@@ -770,6 +798,12 @@ export default function Home() {
                 </TabsTrigger>
                 <TabsTrigger value="dependencies">Dependencies</TabsTrigger>
                 <TabsTrigger value="license">License</TabsTrigger>
+                <TabsTrigger value="cves">
+                  CVEs
+                  <Badge variant="secondary" className="ml-2">
+                    {result.cves.length}
+                  </Badge>
+                </TabsTrigger>
               </TabsList>
 
               <TabsContent value="overview" className="space-y-6">
@@ -1044,6 +1078,77 @@ export default function Home() {
                     </p>
                   </CardContent>
                 </Card>
+              </TabsContent>
+
+              <TabsContent value="cves" className="space-y-4">
+                {result.cves.length === 0 ? (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      No known CVEs or security advisories were found for this
+                      version.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  result.cves.map((cve, index) => (
+                    <Card key={index}>
+                      <CardHeader>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3">
+                            <ShieldAlert className="h-5 w-5 text-destructive" />
+                            <CardTitle className="text-lg">{cve.id}</CardTitle>
+                          </div>
+                          {cve.severity && (
+                            <Badge variant={severityVariant[cve.severity]}>
+                              {cve.severity}
+                            </Badge>
+                          )}
+                        </div>
+                        <CardDescription>{cve.title}</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="text-muted-foreground">
+                          {cve.description}
+                        </p>
+                        {cve.fixedVersion && (
+                          <p className="text-sm text-muted-foreground">
+                            <span className="font-medium">Fixed in:</span>{" "}
+                            {cve.fixedVersion}
+                          </p>
+                        )}
+                        {cve.aliases.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {cve.aliases.map((alias) => (
+                              <Badge key={alias} variant="outline">
+                                {alias}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                        {cve.references.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium text-muted-foreground">
+                              References
+                            </p>
+                            <ul className="space-y-1">
+                              {cve.references.slice(0, 5).map((ref, i) => (
+                                <li key={i}>
+                                  <a
+                                    href={ref.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="break-all text-sm text-primary hover:underline"
+                                  >
+                                    {ref.url}
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))
+                )}
               </TabsContent>
             </Tabs>
           </section>

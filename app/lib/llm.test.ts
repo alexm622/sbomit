@@ -45,6 +45,7 @@ const context: LibraryContext = {
     version: "4.17.21",
     license: "MIT",
   },
+  cves: [],
 };
 
 const baseResult: AuditResult = {
@@ -60,6 +61,7 @@ const baseResult: AuditResult = {
   maintainers: [],
   lastPublished: "recently",
   weeklyDownloads: "many",
+  cves: [],
 };
 
 describe("runLibraryAudit", () => {
