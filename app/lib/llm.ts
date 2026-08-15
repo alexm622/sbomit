@@ -3,7 +3,6 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import {
   auditResultSchema,
   buildAuditPrompt,
-  buildCodebasePrompt,
   postProcessAuditResult,
   type AuditResult,
   type InvestigationArea,
@@ -11,6 +10,15 @@ import {
 } from "./audit";
 import { AuditParseError, UpstreamRateLimitError } from "./errors";
 import { z } from "zod";
+import {
+  buildBudgetedSnapshot,
+  buildLiteSnapshot,
+  estimateTokens,
+  formatSnapshotForLlm,
+  sourceTokenBudget,
+  type CodebaseSnapshot,
+} from "./codebase";
+import type { AuditEventHandler, AuditStep } from "./run-audit";
 
 export type Provider = "openai" | "anthropic" | "google";
 
@@ -52,7 +60,7 @@ export interface AuditWithInteractions {
 
 const INVESTIGATION_PROMPT = `You are a software supply-chain auditor reviewing a library's source code.
 
-Your first task is to identify the most important areas to investigate for security, supply-chain, and dependency risks. Look at the metadata and the provided codebase snapshot (file names and contents). Focus on:
+Your first task is to identify the most important areas to investigate for security, supply-chain, and dependency risks. You are shown either the full codebase snapshot or a "lite" snapshot containing manifest/lifecycle files, a sample of small source files, and a complete file listing. Look at the metadata and the provided snapshot. Focus on:
 - install / postinstall / lifecycle scripts
 - network calls, dynamic requires, eval, child_process
 - obfuscated or minified code bundled in source
@@ -63,7 +71,9 @@ Your first task is to identify the most important areas to investigate for secur
 Return 3-10 investigation areas. For each area include:
 - area: short name
 - rationale: why it matters
-- files: specific file paths from the snapshot to examine in detail`;
+- files: specific file paths from the snapshot to examine in detail
+
+If you are looking at a lite snapshot, prefer selecting files that were not already shown in full so the deep-dive pass can read fresh source code.`;
 
 const DEEP_DIVE_PROMPT = `You are a software supply-chain auditor performing a deep code review.
 
@@ -428,13 +438,64 @@ function buildMetadataSection(
   return buildAuditPrompt(context, userPrompt);
 }
 
+function selectSnapshotForInvestigation(
+  context: LibraryContext,
+): CodebaseSnapshot {
+  if (!context.codebase) {
+    return { files: [], fileCount: 0, totalSize: 0 };
+  }
+
+  const fullText = formatSnapshotForLlm(context.codebase);
+  const budget = sourceTokenBudget();
+
+  if (estimateTokens(fullText) <= budget) {
+    return context.codebase;
+  }
+
+  const lite = buildLiteSnapshot(context.codebase);
+  const liteText = formatSnapshotForLlm(lite);
+  if (estimateTokens(liteText) <= budget) {
+    return lite;
+  }
+
+  // Even the lite snapshot is too large; trim it to fit.
+  return buildBudgetedSnapshot(lite, budget);
+}
+
 function buildInvestigationContent(
   context: LibraryContext,
   userPrompt?: string,
 ): string {
   const metadata = buildMetadataSection(context, userPrompt);
-  const codebase = buildCodebasePrompt(context);
+  const snapshot = selectSnapshotForInvestigation(context);
+  const codebase = formatSnapshotForLlm(snapshot);
   return `${metadata}\n\n${INVESTIGATION_PROMPT}\n\n${codebase}`;
+}
+
+function selectFilesForDeepDive(
+  context: LibraryContext,
+  areas: InvestigationArea[],
+): CodebaseSnapshot {
+  if (!context.codebase) {
+    return { files: [], fileCount: 0, totalSize: 0 };
+  }
+
+  const relevantFiles = new Set<string>();
+  for (const area of areas) {
+    for (const file of area.files) {
+      relevantFiles.add(file);
+    }
+  }
+
+  const budget = sourceTokenBudget();
+  // Reserve a portion of the budget for the full snapshot if it fits, so the
+  // LLM can still see the whole picture while focusing on selected files.
+  const fullText = formatSnapshotForLlm(context.codebase);
+  if (estimateTokens(fullText) <= budget) {
+    return context.codebase;
+  }
+
+  return buildBudgetedSnapshot(context.codebase, budget, relevantFiles);
 }
 
 function buildDeepDiveContent(
@@ -452,28 +513,10 @@ function buildDeepDiveContent(
     2,
   );
 
-  // Pull full contents for files mentioned in the investigation areas.
-  const relevantFiles = new Set<string>();
-  for (const area of areas) {
-    for (const file of area.files) {
-      relevantFiles.add(file);
-    }
-  }
-
-  const fileContents: string[] = [];
-  if (context.codebase) {
-    for (const file of context.codebase.files) {
-      if (relevantFiles.has(file.path)) {
-        fileContents.push(
-          `--- FILE: ${file.path} ---\n${file.content}`,
-        );
-      }
-    }
-  }
-
+  const snapshot = selectFilesForDeepDive(context, areas);
   const filesText =
-    fileContents.length > 0
-      ? `Files selected for deep review:\n\n${fileContents.join("\n\n")}`
+    snapshot.files.length > 0
+      ? `Files selected for deep review:\n\n${formatSnapshotForLlm(snapshot)}`
       : "No source files were available for deep review.";
 
   return `${metadata}\n\n${DEEP_DIVE_PROMPT}\n\nInvestigation areas:\n${areasText}\n\n${filesText}`;
@@ -539,23 +582,60 @@ async function runMetadataOnlyAudit(
 export async function runLibraryAudit(
   context: LibraryContext,
   userPrompt?: string,
+  onEvent?: AuditEventHandler,
 ): Promise<AuditWithInteractions> {
   const config = getLlmConfig();
+
+  async function emitLlmEvent(interaction: LlmInteraction): Promise<void> {
+    if (!onEvent) return;
+    const started = new Date(interaction.startedAt).getTime();
+    const finished = new Date(interaction.finishedAt).getTime();
+    const tokens =
+      (interaction.tokensInput ?? 0) + (interaction.tokensOutput ?? 0);
+    const elapsedMs = Math.max(1, finished - started);
+    await onEvent({
+      type: "llm",
+      phase: interaction.systemPrompt.includes("investigation")
+        ? "investigate"
+        : interaction.systemPrompt.includes("deep code review")
+          ? "deep-dive"
+          : "audit",
+      tokensPerSecond: Math.round(tokens / (elapsedMs / 1000)),
+      tokensInput: interaction.tokensInput,
+      tokensOutput: interaction.tokensOutput,
+      elapsedMs,
+    });
+  }
+
+  async function emitStep(
+    step: AuditStep,
+    status: "started" | "completed",
+  ): Promise<void> {
+    if (!onEvent) return;
+    await onEvent({ type: "step", step, status });
+  }
 
   try {
     let result: AuditResult;
     const interactions: LlmInteraction[] = [];
 
     if (context.codebase && context.codebase.files.length > 0) {
+      await emitStep("investigate", "started");
       const { areas, interaction: investigationInteraction } =
         await runInvestigationPhase(context, config, userPrompt);
       interactions.push(investigationInteraction);
+      await emitLlmEvent(investigationInteraction);
+      await emitStep("investigate", "completed");
 
+      await emitStep("deep-dive", "started");
       const { result: auditResult, interaction: auditInteraction } =
         await runAuditPhase(context, config, areas, userPrompt);
       result = auditResult;
       interactions.push(auditInteraction);
+      await emitLlmEvent(auditInteraction);
+      await emitStep("deep-dive", "completed");
     } else {
+      await emitStep("metadata-only", "started");
       const { result: auditResult, interaction } = await runMetadataOnlyAudit(
         context,
         config,
@@ -563,6 +643,8 @@ export async function runLibraryAudit(
       );
       result = auditResult;
       interactions.push(interaction);
+      await emitLlmEvent(interaction);
+      await emitStep("metadata-only", "completed");
     }
 
     result = postProcessAuditResult(result, context);

@@ -10,6 +10,12 @@ export interface CodebaseSnapshot {
   totalSize: number;
 }
 
+export interface SourceChunk {
+  name: string;
+  files: CodebaseFile[];
+  totalSize: number;
+}
+
 const SKIPPED_DIRS = new Set([
   "node_modules",
   ".git",
@@ -65,9 +71,39 @@ const SKIPPED_EXTENSIONS = [
   ".map",
 ];
 
-const MAX_FILE_SIZE = 100 * 1024; // 100 KB
-const MAX_TOTAL_SIZE = 200 * 1024; // 200 KB
-const MAX_FILES = 75;
+// Extraction limits: how much source we pull out of the tarball locally.
+// These are bounded by Worker memory and by the LLM context budget below.
+export const MAX_FILE_SIZE = 500 * 1024; // 500 KB
+export const MAX_TOTAL_SIZE = 5 * 1024 * 1024; // 5 MB
+export const MAX_FILES = 500;
+
+// Network limit: refuse to download enormous tarballs that could OOM a Worker.
+export const MAX_TARBALL_BYTES = 20 * 1024 * 1024; // 20 MB
+
+// Rough token estimation for code/text. Code is token-denser than prose,
+// so this is intentionally conservative.
+export const CHARS_PER_TOKEN_ESTIMATE = 3.0;
+
+// Default LLM context budget the pipeline targets. The source portion is
+// kept smaller than this to leave room for system prompts, metadata,
+// instructions, and the structured output.
+export const DEFAULT_CONTEXT_TOKEN_BUDGET = 256_000;
+export const DEFAULT_SOURCE_TOKEN_BUDGET = 200_000;
+
+// Tokens reserved for system prompt, metadata, instructions, JSON schema,
+// and the structured output. This is subtracted from the model's context window
+// to arrive at the source-code budget.
+const PROMPT_OVERHEAD_TOKENS = 50_000;
+
+export function sourceTokenBudget(): number {
+  const configured = process.env.LLM_CONTEXT_TOKEN_BUDGET
+    ? parseInt(process.env.LLM_CONTEXT_TOKEN_BUDGET, 10)
+    : DEFAULT_SOURCE_TOKEN_BUDGET + PROMPT_OVERHEAD_TOKENS;
+  if (Number.isNaN(configured) || configured <= 0) {
+    return DEFAULT_SOURCE_TOKEN_BUDGET;
+  }
+  return Math.max(10_000, configured - PROMPT_OVERHEAD_TOKENS);
+}
 
 export function shouldSkipFile(path: string): boolean {
   const lower = path.toLowerCase();
@@ -216,7 +252,28 @@ async function decompressGzip(buffer: ArrayBuffer): Promise<ArrayBuffer> {
   const stream = new Response(buffer).body;
   if (!stream) throw new Error("Empty response body.");
   const decompressed = stream.pipeThrough(new DecompressionStream("gzip"));
-  return new Response(decompressed).arrayBuffer();
+  const result = await new Response(decompressed).arrayBuffer();
+  assertTarballSize(result);
+  return result;
+}
+
+function assertTarballSize(buffer: ArrayBuffer): void {
+  if (buffer.byteLength > MAX_TARBALL_BYTES) {
+    throw new Error(
+      `Tarball is too large (${Math.round(
+        buffer.byteLength / (1024 * 1024),
+      )} MB). Max supported is ${MAX_TARBALL_BYTES / (1024 * 1024)} MB.`,
+    );
+  }
+}
+
+function shouldDecompressGzip(
+  url: string,
+  contentType: string | null,
+): boolean {
+  if (contentType?.includes("gzip")) return true;
+  const lower = url.toLowerCase();
+  return lower.endsWith(".tgz") || lower.endsWith(".tar.gz") || lower.endsWith(".gz");
 }
 
 export async function fetchNpmTarball(tarballUrl: string): Promise<CodebaseFile[]> {
@@ -229,7 +286,8 @@ export async function fetchNpmTarball(tarballUrl: string): Promise<CodebaseFile[
   }
   const contentType = res.headers.get("content-type") || "";
   const buffer = await res.arrayBuffer();
-  const decompressed = contentType.includes("gzip")
+  assertTarballSize(buffer);
+  const decompressed = shouldDecompressGzip(tarballUrl, contentType)
     ? await decompressGzip(buffer)
     : buffer;
   return parseTar(new Uint8Array(decompressed));
@@ -254,8 +312,10 @@ export async function fetchGitHubTarball(
     );
   }
   const contentType = res.headers.get("content-type") || "";
+  const finalUrl = res.url || url;
   const buffer = await res.arrayBuffer();
-  const decompressed = contentType.includes("gzip")
+  assertTarballSize(buffer);
+  const decompressed = shouldDecompressGzip(finalUrl, contentType)
     ? await decompressGzip(buffer)
     : buffer;
   return parseTar(new Uint8Array(decompressed));
@@ -295,6 +355,10 @@ export function buildCodebaseSnapshot(files: CodebaseFile[]): CodebaseSnapshot {
   };
 }
 
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
+}
+
 export function formatSnapshotForLlm(snapshot: CodebaseSnapshot): string {
   let output = `Codebase snapshot (${snapshot.fileCount} files, ${snapshot.totalSize} bytes)\n\n`;
   for (const file of snapshot.files) {
@@ -304,6 +368,142 @@ export function formatSnapshotForLlm(snapshot: CodebaseSnapshot): string {
     output += "\n";
   }
   return output;
+}
+
+export function formatFileList(files: CodebaseFile[]): string {
+  return files.map((f) => `- ${f.path} (${f.size} bytes)`).join("\n");
+}
+
+const PRIORITY_FILE_PATTERN =
+  /package\.json|package-lock|yarn\.lock|pnpm-lock|bun\.lock|\.lockb|readme|license|changelog|security|\.github\/(workflows|dependabot|codeql)|postinstall|preinstall|install/i;
+
+function isPriorityFile(path: string): boolean {
+  return PRIORITY_FILE_PATTERN.test(path);
+}
+
+/**
+ * Build a "lite" snapshot for oversized codebases. It contains manifest and
+ * lifecycle files first, a sample of small source files, plus a complete file
+ * listing. The LLM uses this to direct the deep-dive by selecting files.
+ */
+export function buildLiteSnapshot(snapshot: CodebaseSnapshot): CodebaseSnapshot {
+  const priority = snapshot.files.filter((f) => isPriorityFile(f.path));
+  const remaining = snapshot.files.filter((f) => !isPriorityFile(f.path));
+
+  // Add a representative sample of small source files so the LLM sees real code.
+  const samples = remaining
+    .filter((f) => f.size <= 20 * 1024)
+    .slice(0, 30);
+
+  const listing = [
+    `Full snapshot: ${snapshot.fileCount} files, ${snapshot.totalSize} bytes`,
+    `Lite snapshot includes ${priority.length} priority files and ${samples.length} sample files.`,
+    "",
+    "Complete file listing (selected files are marked with *):",
+    ...snapshot.files.map((f) => {
+      const selected =
+        priority.includes(f) || samples.includes(f) ? " *" : "";
+      return `- ${f.path} (${f.size} bytes)${selected}`;
+    }),
+  ].join("\n");
+
+  const listingFile: CodebaseFile = {
+    path: "FILE_LISTING.txt",
+    size: listing.length,
+    content: listing,
+  };
+
+  const liteFiles = [...priority, ...samples, listingFile];
+  const liteSize = liteFiles.reduce((sum, f) => sum + f.size, 0);
+
+  return {
+    files: liteFiles,
+    fileCount: snapshot.fileCount,
+    totalSize: liteSize,
+  };
+}
+
+/**
+ * Split a snapshot into chunks that each fit inside a token budget.
+ * The first chunk always contains priority files; remaining files are packed
+ * greedily. Used when a single prompt cannot hold the entire source tree.
+ */
+export function chunkSnapshot(
+  snapshot: CodebaseSnapshot,
+  maxTokensPerChunk: number,
+): SourceChunk[] {
+  const maxChars = Math.floor(maxTokensPerChunk * CHARS_PER_TOKEN_ESTIMATE);
+
+  const priority = snapshot.files.filter((f) => isPriorityFile(f.path));
+  const rest = snapshot.files.filter((f) => !isPriorityFile(f.path));
+
+  const chunks: SourceChunk[] = [];
+
+  if (priority.length > 0) {
+    chunks.push({
+      name: "priority-manifests",
+      files: priority,
+      totalSize: priority.reduce((sum, f) => sum + f.size, 0),
+    });
+  }
+
+  let current: CodebaseFile[] = [];
+  let currentSize = 0;
+  for (const file of rest) {
+    if (currentSize + file.size > maxChars && current.length > 0) {
+      chunks.push({
+        name: `chunk-${chunks.length}`,
+        files: current,
+        totalSize: currentSize,
+      });
+      current = [];
+      currentSize = 0;
+    }
+    current.push(file);
+    currentSize += file.size;
+  }
+  if (current.length > 0) {
+    chunks.push({
+      name: `chunk-${chunks.length}`,
+      files: current,
+      totalSize: currentSize,
+    });
+  }
+
+  return chunks;
+}
+
+/**
+ * Build a snapshot of selected files that fits within a character budget.
+ * Files are included in order until the budget is exhausted.
+ */
+export function buildBudgetedSnapshot(
+  snapshot: CodebaseSnapshot,
+  maxTokens: number,
+  selectedPaths?: Set<string>,
+): CodebaseSnapshot {
+  const maxChars = Math.floor(maxTokens * CHARS_PER_TOKEN_ESTIMATE);
+  const sourceFiles = selectedPaths
+    ? snapshot.files.filter((f) => selectedPaths.has(f.path))
+    : snapshot.files;
+
+  const included: CodebaseFile[] = [];
+  let totalSize = 0;
+  for (const file of sourceFiles) {
+    if (totalSize + file.size > maxChars) {
+      if (included.length > 0) break;
+      // Always include at least one file, even if it exceeds the budget,
+      // so the LLM has something to analyze.
+    }
+    included.push(file);
+    totalSize += file.size;
+  }
+
+  return {
+    files: included,
+    fileCount: included.length,
+    totalSize,
+  };
 }
 
 export interface InvestigationArea {

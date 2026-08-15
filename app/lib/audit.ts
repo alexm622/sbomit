@@ -11,6 +11,7 @@ import {
   fetchGitHubTarball,
   fetchNpmTarball,
   formatSnapshotForLlm,
+  sourceTokenBudget,
 } from "./codebase";
 
 const riskSchema = z.object({
@@ -77,8 +78,11 @@ interface NpmMetadata {
   homepage?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
   dist?: { tarball?: string };
   readme?: string;
+  versions?: Record<string, NpmMetadata>;
 }
 
 interface GitHubRepo {
@@ -167,7 +171,8 @@ export async function computeCacheKey(
   prompt?: string,
 ): Promise<string> {
   const normalizedPrompt = normalizePrompt(prompt) || "";
-  const input = `${context.source}:${context.name}:${context.version}:${normalizedPrompt}`;
+  const budget = sourceTokenBudget();
+  const input = `${context.source}:${context.name}:${context.version}:${budget}:${normalizedPrompt}`;
   const encoder = new TextEncoder();
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -196,7 +201,7 @@ export async function resolveLibrary(
   const npmName = parseNpmUrl(libraryUrl);
   if (npmName) {
     const res = await fetch(`https://registry.npmjs.org/${npmName}`, {
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/vnd.npm.install-v1+json" },
       next: { revalidate: 0 },
     });
     if (!res.ok) {
@@ -206,12 +211,14 @@ export async function resolveLibrary(
       throw new PackageNotFoundError(npmName);
     }
     const data = (await res.json()) as NpmMetadata;
+    const version = data.version ?? data["dist-tags"]?.latest ?? "latest";
+    const versionMetadata = data.versions?.[version] ?? data;
     return {
       source: "npm",
       url: libraryUrl,
       name: data.name,
-      version: data.version ?? data["dist-tags"]?.latest ?? "latest",
-      metadata: data,
+      version,
+      metadata: versionMetadata,
     };
   }
 

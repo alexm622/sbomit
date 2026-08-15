@@ -1,9 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   parseTar,
   buildCodebaseSnapshot,
   formatSnapshotForLlm,
   shouldSkipFile,
+  estimateTokens,
+  buildLiteSnapshot,
+  buildBudgetedSnapshot,
+  chunkSnapshot,
+  MAX_FILE_SIZE,
+  MAX_TARBALL_BYTES,
 } from "./codebase";
 
 function octal(value: number, length: number): string {
@@ -102,7 +108,7 @@ describe("parseTar", () => {
 
   it("limits oversized files", () => {
     const tar = createTar([
-      { name: "package/huge.js", content: "x".repeat(200 * 1024) },
+      { name: "package/huge.js", content: "x".repeat(MAX_FILE_SIZE + 1) },
     ]);
 
     const files = parseTar(tar);
@@ -159,5 +165,88 @@ describe("shouldSkipFile", () => {
   it("is exported for direct use", () => {
     expect(shouldSkipFile("node_modules/foo.js")).toBe(true);
     expect(shouldSkipFile("src/index.js")).toBe(false);
+  });
+});
+
+describe("estimateTokens", () => {
+  it("returns a conservative character-based estimate", () => {
+    expect(estimateTokens("x".repeat(300))).toBe(100);
+  });
+});
+
+describe("buildLiteSnapshot", () => {
+  it("includes priority files, samples, and a full file listing", () => {
+    const snapshot = buildCodebaseSnapshot([
+      { path: "package.json", size: 50, content: '{"name":"x"}' },
+      { path: "src/index.js", size: 100, content: "console.log('ok');" },
+      { path: "src/helpers.js", size: 100, content: "export const x = 1;" },
+      { path: "dist/bundle.js", size: 200, content: "minified" },
+    ]);
+    const lite = buildLiteSnapshot(snapshot);
+    const paths = lite.files.map((f) => f.path);
+    expect(paths).toContain("package.json");
+    expect(paths).toContain("FILE_LISTING.txt");
+    expect(lite.files.find((f) => f.path === "FILE_LISTING.txt")?.content).toContain(
+      "src/index.js",
+    );
+  });
+});
+
+describe("buildBudgetedSnapshot", () => {
+  it("includes files until the token budget is exhausted", () => {
+    const snapshot = buildCodebaseSnapshot([
+      { path: "package.json", size: 50, content: '{"name":"x"}' },
+      { path: "src/a.js", size: 10_000, content: "a".repeat(10_000) },
+      { path: "src/b.js", size: 10_000, content: "b".repeat(10_000) },
+    ]);
+    const budgeted = buildBudgetedSnapshot(snapshot, 3000);
+    expect(budgeted.files.length).toBeGreaterThanOrEqual(1);
+    expect(estimateTokens(formatSnapshotForLlm(budgeted))).toBeLessThanOrEqual(
+      3000,
+    );
+  });
+
+  it("only includes selected paths when provided", () => {
+    const snapshot = buildCodebaseSnapshot([
+      { path: "package.json", size: 50, content: '{"name":"x"}' },
+      { path: "src/a.js", size: 100, content: "a" },
+      { path: "src/b.js", size: 100, content: "b" },
+    ]);
+    const selected = buildBudgetedSnapshot(
+      snapshot,
+      100_000,
+      new Set(["src/a.js"]),
+    );
+    expect(selected.files.map((f) => f.path)).toEqual(["src/a.js"]);
+  });
+});
+
+describe("chunkSnapshot", () => {
+  it("places priority files in their own chunk", () => {
+    const snapshot = buildCodebaseSnapshot([
+      { path: "package.json", size: 50, content: '{"name":"x"}' },
+      { path: "src/a.js", size: 10_000, content: "a".repeat(10_000) },
+      { path: "src/b.js", size: 10_000, content: "b".repeat(10_000) },
+    ]);
+    const chunks = chunkSnapshot(snapshot, 3000);
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
+    expect(chunks[0].name).toBe("priority-manifests");
+    expect(chunks[0].files.map((f) => f.path)).toContain("package.json");
+  });
+});
+
+describe("tarball size guard", () => {
+  it("rejects tarballs larger than the configured maximum", async () => {
+    const { fetchNpmTarball } = await import("./codebase");
+    const oversized = new Uint8Array(MAX_TARBALL_BYTES + 1);
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(oversized.buffer, {
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      }),
+    );
+    await expect(
+      fetchNpmTarball("https://registry.npmjs.org/fake/-/fake-1.0.0.tgz"),
+    ).rejects.toThrow("Tarball is too large");
   });
 });

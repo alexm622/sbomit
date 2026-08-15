@@ -151,6 +151,59 @@ describe("runLibraryAudit", () => {
     expect(mockParse).toHaveBeenCalledTimes(2);
   });
 
+  it("uses a lite snapshot for investigation when the codebase exceeds the token budget", async () => {
+    const hugeContent = "x".repeat(1_000_000);
+    const contextWithHugeCodebase = {
+      ...context,
+      codebase: {
+        fileCount: 2,
+        totalSize: hugeContent.length + 50,
+        files: [
+          { path: "package.json", size: 50, content: '{"name":"x"}' },
+          { path: "src/huge.js", size: hugeContent.length, content: hugeContent },
+        ],
+      },
+    };
+
+    mockParse
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              parsed: {
+                investigationAreas: [
+                  {
+                    area: "Huge file",
+                    rationale: "Check for obfuscation.",
+                    files: ["src/huge.js"],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              parsed: { ...baseResult, score: 88.5 },
+            },
+          },
+        ],
+      });
+
+    await runLibraryAudit(contextWithHugeCodebase);
+    const investigationCall = mockParse.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const userPrompt = investigationCall.messages.find(
+      (m) => m.role === "user",
+    )?.content;
+    expect(userPrompt).toContain("FILE_LISTING.txt");
+    expect(userPrompt?.length).toBeLessThan(hugeContent.length);
+  });
+
   it("throws AuditParseError when parsed is missing", async () => {
     mockParse.mockResolvedValue({
       choices: [{ message: {} }],

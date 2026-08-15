@@ -40,9 +40,11 @@ import {
 import { SiteHeader } from "@/app/components/site-header";
 import {
   ElapsedTime,
+  Countdown,
   displayUrlLabel,
   useAuditJobs,
 } from "@/app/components/audit-jobs";
+import type { AuditStep } from "@/app/lib/run-audit";
 
 interface Risk {
   severity: "critical" | "high" | "medium" | "low";
@@ -127,33 +129,44 @@ function normalizeUrl(value: string): string {
   return trimmed;
 }
 
-const pipelineSteps = [
+const pipelineSteps: {
+  step: AuditStep;
+  icon: React.ElementType;
+  label: string;
+  detail: string;
+}[] = [
   {
+    step: "resolve",
     icon: Search,
     label: "Resolving package metadata",
     detail: "Fetching package data from the npm registry or GitHub API.",
   },
   {
+    step: "download",
     icon: Database,
     label: "Fetching source code",
     detail: "Downloading and unpacking the package tarball for code inspection.",
   },
   {
+    step: "investigate",
     icon: MessageSquare,
     label: "Identifying investigation areas",
     detail: "First AI pass: pinpoint the files and patterns worth scrutinizing.",
   },
   {
+    step: "deep-dive",
     icon: Zap,
     label: "Deep-diving into code",
     detail: "Second AI pass: analyze the selected files and produce a structured report.",
   },
   {
+    step: "validate",
     icon: CheckCircle2,
     label: "Validating the result",
     detail: "Parsing, clamping, and cross-checking the structured output.",
   },
   {
+    step: "persist",
     icon: Database,
     label: "Saving the report",
     detail: "Persisting the audit to D1 so it appears in your audit history.",
@@ -611,25 +624,89 @@ export default function Home() {
                 )}
 
                 <div>
-                  <p className="mb-3 text-sm font-medium">
-                    What&apos;s happening during this audit
-                  </p>
+                  <div className="mb-3 flex items-center justify-between">
+                    <p className="text-sm font-medium">
+                      What&apos;s happening during this audit
+                    </p>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      {activeJob.tokensPerSecond !== undefined &&
+                        activeJob.tokensPerSecond > 0 && (
+                          <span className="rounded-full bg-primary/10 px-2 py-1 font-medium text-primary">
+                            {activeJob.tokensPerSecond.toLocaleString()} tok/s
+                          </span>
+                        )}
+                      {activeJob.estimatedFinishAt !== undefined && (
+                        <span className="rounded-full bg-muted px-2 py-1">
+                          ETA{" "}
+                          <Countdown
+                            to={activeJob.estimatedFinishAt}
+                            className="tabular-nums"
+                          />
+                        </span>
+                      )}
+                    </div>
+                  </div>
                   <ol className="space-y-3">
-                    {pipelineSteps.map((step, index) => (
-                      <li key={step.label} className="flex items-start gap-3">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                          <step.icon className="h-4 w-4" />
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium">
-                            {index + 1}. {step.label}
-                          </p>
-                          <p className="text-sm text-muted-foreground">
-                            {step.detail}
-                          </p>
-                        </div>
-                      </li>
-                    ))}
+                    {pipelineSteps.map((step, index) => {
+                      const isMetadataOnlyAudit =
+                        activeJob.downloadDetail === "metadata only";
+                      const isRelevant =
+                        !isMetadataOnlyAudit || step.step !== "deep-dive";
+                      if (!isRelevant) return null;
+
+                      const stepMatchesCurrent =
+                        activeJob.currentStep === step.step ||
+                        (step.step === "investigate" &&
+                          activeJob.currentStep === "metadata-only");
+                      const stepMatchesCompleted =
+                        activeJob.completedSteps?.includes(step.step) ?? false;
+                      const metadataOnlyCompleted =
+                        step.step === "investigate" &&
+                        activeJob.completedSteps?.includes("metadata-only");
+                      const isCompleted =
+                        stepMatchesCompleted || !!metadataOnlyCompleted;
+                      const isActive = stepMatchesCurrent;
+
+                      return (
+                        <li
+                          key={step.label}
+                          className={cn(
+                            "flex items-start gap-3 transition-opacity",
+                            !isActive && !isCompleted && "opacity-50",
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+                              isCompleted
+                                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                                : isActive
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-primary/10 text-primary",
+                            )}
+                          >
+                            {isCompleted ? (
+                              <CheckCircle2 className="h-4 w-4" />
+                            ) : isActive ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <step.icon className="h-4 w-4" />
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-sm font-medium">
+                              {index + 1}. {step.label}
+                            </p>
+                            <p className="text-sm text-muted-foreground">
+                              {step.detail}
+                              {step.step === "download" &&
+                                activeJob.downloadDetail &&
+                                ` · ${activeJob.downloadDetail}`}
+                            </p>
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ol>
                 </div>
 

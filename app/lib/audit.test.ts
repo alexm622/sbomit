@@ -17,12 +17,18 @@ import {
 
 const npmMetadata = {
   name: "lodash",
-  version: "4.17.21",
-  description: "A modern JavaScript utility library.",
-  license: "MIT",
-  maintainers: [{ name: "jdalton", email: "john.david.dalton@gmail.com" }],
-  time: { "4.17.21": "2021-02-20T00:00:00.000Z" },
-  dependencies: {},
+  "dist-tags": { latest: "4.17.21" },
+  versions: {
+    "4.17.21": {
+      name: "lodash",
+      version: "4.17.21",
+      description: "A modern JavaScript utility library.",
+      license: "MIT",
+      maintainers: [{ name: "jdalton", email: "john.david.dalton@gmail.com" }],
+      dependencies: {},
+      dist: { tarball: "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz" },
+    },
+  },
 };
 
 const githubMetadata = {
@@ -85,7 +91,20 @@ describe("resolveLibrary", () => {
       {
         url: "https://registry.npmjs.org/@types/lodash",
         response: new Response(
-          JSON.stringify({ name: "@types/lodash", version: "4.14.0" }),
+          JSON.stringify({
+            name: "@types/lodash",
+            "dist-tags": { latest: "4.14.0" },
+            versions: {
+              "4.14.0": {
+                name: "@types/lodash",
+                version: "4.14.0",
+                dist: {
+                  tarball:
+                    "https://registry.npmjs.org/@types/lodash/-/lodash-4.14.0.tgz",
+                },
+              },
+            },
+          }),
           { status: 200 },
         ),
       },
@@ -96,6 +115,7 @@ describe("resolveLibrary", () => {
     );
     expect(context.source).toBe("npm");
     expect(context.name).toBe("@types/lodash");
+    expect(context.version).toBe("4.14.0");
   });
 
   it("throws PackageNotFoundError for npm 404", async () => {

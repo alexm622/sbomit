@@ -3,6 +3,7 @@
 import * as React from "react";
 import type { AuditResult } from "@/app/lib/audit";
 import type { LlmInteraction } from "@/app/lib/llm";
+import type { AuditEvent, AuditStep } from "@/app/lib/run-audit";
 
 export type AuditJobStatus = "running" | "completed" | "failed" | "cancelled";
 
@@ -17,6 +18,12 @@ export interface AuditJob {
   error?: string;
   codebaseInspected?: boolean;
   interactions?: LlmInteraction[];
+  currentStep?: AuditStep;
+  completedSteps?: AuditStep[];
+  tokensPerSecond?: number;
+  lastLlmPhase?: string;
+  estimatedFinishAt?: number;
+  downloadDetail?: string;
 }
 
 export interface AuditJobMeta {
@@ -74,9 +81,16 @@ export function AuditJobsProvider({
   const abortControllers = React.useRef(new Map<string, AbortController>());
 
   const updateJob = React.useCallback(
-    (jobId: string, patch: Partial<AuditJob>) => {
+    (
+      jobId: string,
+      patch: Partial<AuditJob> | ((job: AuditJob) => Partial<AuditJob>),
+    ) => {
       setJobs((prev) =>
-        prev.map((job) => (job.id === jobId ? { ...job, ...patch } : job)),
+        prev.map((job) => {
+          if (job.id !== jobId) return job;
+          const applied = typeof patch === "function" ? patch(job) : patch;
+          return { ...job, ...applied };
+        }),
       );
     },
     [],
@@ -95,12 +109,13 @@ export function AuditJobsProvider({
         prompt: input.prompt,
         status: "running",
         startedAt: Date.now(),
+        completedSteps: [],
       };
       setJobs((prev) => [job, ...prev]);
 
       const done = (async (): Promise<AuditOutcome> => {
         try {
-          const res = await fetch("/api/audit", {
+          const res = await fetch("/api/audit/stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -110,35 +125,85 @@ export function AuditJobsProvider({
             signal: controller.signal,
           });
 
-          const data = (await res.json()) as {
-            result?: AuditResult;
-            meta?: AuditJobMeta;
-            error?: string;
-          };
-
-          if (!res.ok || data.error) {
-            throw new Error(data.error || "Audit failed.");
+          if (!res.ok || !res.body) {
+            throw new Error("Audit stream failed to start.");
           }
-          if (!data.result) {
-            throw new Error("No audit result returned.");
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let finalOutcome: AuditOutcome | undefined;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              const event = JSON.parse(line) as
+                | AuditEvent
+                | { type: "complete"; result: AuditResult; meta: AuditJobMeta }
+                | { type: "error"; error: { error: string; code: string } };
+
+              if (event.type === "complete") {
+                finalOutcome = {
+                  status: "completed",
+                  result: event.result,
+                  meta: event.meta,
+                };
+              } else if (event.type === "error") {
+                throw new Error(event.error.error);
+              } else if (event.type === "step") {
+                updateJob(jobId, (prev) => {
+                  const completed = new Set(prev.completedSteps ?? []);
+                  if (event.status === "completed") {
+                    completed.add(event.step);
+                  }
+                  return {
+                    currentStep:
+                      event.status === "started" ? event.step : undefined,
+                    completedSteps: Array.from(completed),
+                    downloadDetail:
+                      event.step === "download" && event.status === "completed"
+                        ? event.detail
+                        : prev.downloadDetail,
+                  };
+                });
+              } else if (event.type === "llm") {
+                updateJob(jobId, {
+                  tokensPerSecond: event.tokensPerSecond,
+                  lastLlmPhase: event.phase,
+                });
+              } else if (event.type === "eta") {
+                updateJob(jobId, {
+                  estimatedFinishAt: event.estimatedFinishAt,
+                });
+              }
+            }
+          }
+
+          if (!finalOutcome || finalOutcome.status !== "completed") {
+            throw new Error("Audit stream ended without a result.");
           }
 
           updateJob(jobId, {
             status: "completed",
             finishedAt: Date.now(),
-            codebaseInspected: data.meta?.codebaseInspected,
-            interactions: data.meta?.interactions,
+            codebaseInspected: finalOutcome.meta.codebaseInspected,
+            interactions: finalOutcome.meta.interactions,
+            currentStep: undefined,
           });
-          return {
-            status: "completed",
-            result: data.result,
-            meta: data.meta ?? { cached: false, auditId: 0, reportId: 0 },
-          };
+          return finalOutcome;
         } catch (error) {
           if (controller.signal.aborted) {
             updateJob(jobId, {
               status: "cancelled",
               finishedAt: Date.now(),
+              currentStep: undefined,
             });
             return { status: "cancelled" };
           }
@@ -148,6 +213,7 @@ export function AuditJobsProvider({
             status: "failed",
             finishedAt: Date.now(),
             error: message,
+            currentStep: undefined,
           });
           return { status: "failed", error: message };
         } finally {
@@ -206,6 +272,33 @@ export function ElapsedTime({
   }, [since]);
 
   const totalSeconds = Math.floor(elapsedMs / 1000);
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+
+  return (
+    <span className={className}>
+      {minutes}:{seconds}
+    </span>
+  );
+}
+
+export function Countdown({
+  to,
+  className,
+}: {
+  to: number;
+  className?: string;
+}) {
+  const [remainingMs, setRemainingMs] = React.useState(() => to - Date.now());
+
+  React.useEffect(() => {
+    const tick = () => setRemainingMs(Math.max(0, to - Date.now()));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [to]);
+
+  const totalSeconds = Math.floor(remainingMs / 1000);
   const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
   const seconds = String(totalSeconds % 60).padStart(2, "0");
 

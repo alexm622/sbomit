@@ -4,27 +4,13 @@ import { reset } from "cloudflare:test";
 import { POST } from "./route";
 import type { AuditResult } from "@/app/lib/audit";
 
-const mockRunLibraryAudit = vi.fn();
-const mockGetLlmConfig = vi.fn();
+const mockRunAudit = vi.fn();
 
-vi.mock("@/app/lib/llm", () => {
-  return {
-    runLibraryAudit: (...args: unknown[]) => mockRunLibraryAudit(...args),
-    getLlmConfig: () => mockGetLlmConfig(),
-  };
-});
-
-vi.mock("@/app/lib/db", async () => {
-  const actual = await vi.importActual<typeof import("@/app/lib/db")>(
-    "@/app/lib/db",
-  );
-  const { env } = await import("cloudflare:workers");
+vi.mock("@/app/lib/run-audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/app/lib/run-audit")>();
   return {
     ...actual,
-    getDb: async (passedEnv?: Record<string, unknown>) => {
-      if (passedEnv?.DB) return passedEnv.DB as D1Database;
-      return actual.getDb({ DB: env.DB } as Record<string, unknown>);
-    },
+    runAudit: (...args: unknown[]) => mockRunAudit(...args),
   };
 });
 
@@ -43,23 +29,25 @@ const baseResult: AuditResult = {
   weeklyDownloads: "many",
 };
 
-const baseInteraction = {
-  provider: "openai" as const,
-  model: "gpt-4o-mini",
-  systemPrompt: "system",
-  userPrompt: "user",
-  request: { model: "gpt-4o-mini" },
-  response: { choices: [{ message: { parsed: baseResult } }] },
-  startedAt: "2024-01-01T00:00:00.000Z",
-  finishedAt: "2024-01-01T00:00:01.000Z",
-  tokensInput: 100,
-  tokensOutput: 50,
-};
-
-const npmMetadata = {
-  name: "lodash",
-  version: "4.17.21",
-  license: "MIT",
+const baseMeta = {
+  cached: false,
+  auditId: 1,
+  reportId: 2,
+  codebaseInspected: true,
+  interactions: [
+    {
+      provider: "openai" as const,
+      model: "gpt-4o-mini",
+      systemPrompt: "system",
+      userPrompt: "user",
+      request: { model: "gpt-4o-mini" },
+      response: { choices: [{ message: { parsed: baseResult } }] },
+      startedAt: "2024-01-01T00:00:00.000Z",
+      finishedAt: "2024-01-01T00:00:01.000Z",
+      tokensInput: 100,
+      tokensOutput: 50,
+    },
+  ],
 };
 
 function mockFetch(response: Response | (() => Response)) {
@@ -104,23 +92,21 @@ describe("POST /api/audit", () => {
   });
 
   beforeEach(() => {
-    mockGetLlmConfig.mockReturnValue({ model: "gpt-4o-mini" });
-    mockRunLibraryAudit.mockResolvedValue({
+    mockRunAudit.mockResolvedValue({
       result: baseResult,
-      interactions: [baseInteraction],
+      meta: baseMeta,
     });
   });
 
   afterEach(async () => {
     await reset();
     await setupSchema(db);
-    mockRunLibraryAudit.mockReset();
-    mockGetLlmConfig.mockReset();
+    mockRunAudit.mockReset();
   });
 
-  it("returns a fresh audit and persists it", async () => {
+  it("returns a fresh audit", async () => {
     globalThis.fetch = mockFetch(
-      () => new Response(JSON.stringify(npmMetadata), { status: 200 }),
+      () => new Response(JSON.stringify({}), { status: 200 }),
     );
 
     const request = new Request("http://localhost/api/audit", {
@@ -144,53 +130,35 @@ describe("POST /api/audit", () => {
 
     expect(response.status).toBe(200);
     expect(data.meta.cached).toBe(false);
-    expect(data.meta.auditId).toBeGreaterThan(0);
-    expect(data.meta.reportId).toBeGreaterThan(0);
+    expect(data.meta.auditId).toBe(1);
+    expect(data.meta.reportId).toBe(2);
     expect(data.result.name).toBe("lodash");
     expect(data.meta.interactions).toHaveLength(1);
-    expect(data.meta.interactions[0].provider).toBe("openai");
-    expect(data.meta.interactions[0].model).toBe("gpt-4o-mini");
+    expect(mockRunAudit).toHaveBeenCalledWith({
+      libraryUrl: "https://www.npmjs.com/package/lodash",
+      prompt: undefined,
+    });
   });
 
-  it("returns a cached audit on identical input", async () => {
+  it("passes the custom prompt through", async () => {
     globalThis.fetch = mockFetch(
-      () => new Response(JSON.stringify(npmMetadata), { status: 200 }),
+      () => new Response(JSON.stringify({}), { status: 200 }),
     );
-    mockRunLibraryAudit.mockResolvedValue({
-      result: baseResult,
-      interactions: [baseInteraction],
+
+    const request = new Request("http://localhost/api/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        libraryUrl: "https://www.npmjs.com/package/lodash",
+        prompt: "focus on security",
+      }),
     });
 
-    const first = await POST(
-      new Request("http://localhost/api/audit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          libraryUrl: "https://www.npmjs.com/package/lodash",
-          prompt: "focus on security",
-        }),
-      }),
-    );
-    const firstData = (await first.json()) as {
-      meta: { cached: boolean; reportId: number };
-    };
-    expect(firstData.meta.cached).toBe(false);
-
-    const second = await POST(
-      new Request("http://localhost/api/audit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          libraryUrl: "https://www.npmjs.com/package/lodash",
-          prompt: "focus on security",
-        }),
-      }),
-    );
-    const secondData = (await second.json()) as {
-      meta: { cached: boolean; reportId: number };
-    };
-    expect(secondData.meta.reportId).toBe(firstData.meta.reportId);
-    expect(mockRunLibraryAudit).toHaveBeenCalledTimes(1);
+    await POST(request);
+    expect(mockRunAudit).toHaveBeenCalledWith({
+      libraryUrl: "https://www.npmjs.com/package/lodash",
+      prompt: "focus on security",
+    });
   });
 
   it("returns 400 for missing libraryUrl", async () => {
@@ -206,7 +174,10 @@ describe("POST /api/audit", () => {
     expect(data.code).toBe("MISSING_INPUT");
   });
 
-  it("returns 422 for unsupported source", async () => {
+  it("returns typed errors from runAudit", async () => {
+    const { UnsupportedSourceError } = await import("@/app/lib/errors");
+    mockRunAudit.mockRejectedValue(new UnsupportedSourceError());
+
     const request = new Request("http://localhost/api/audit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -219,22 +190,5 @@ describe("POST /api/audit", () => {
     expect(response.status).toBe(422);
     const data = (await response.json()) as { error: string; code: string };
     expect(data.code).toBe("UNSUPPORTED_SOURCE");
-  });
-
-  it("returns 404 for unknown npm package", async () => {
-    globalThis.fetch = mockFetch(() => new Response("Not Found", { status: 404 }));
-
-    const request = new Request("http://localhost/api/audit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        libraryUrl: "https://www.npmjs.com/package/not-a-real-pkg",
-      }),
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(404);
-    const data = (await response.json()) as { error: string; code: string };
-    expect(data.code).toBe("PACKAGE_NOT_FOUND");
   });
 });
