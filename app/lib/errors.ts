@@ -5,6 +5,7 @@ export type ErrorCode =
   | "REPO_NOT_FOUND"
   | "REPORT_NOT_FOUND"
   | "UPSTREAM_RATE_LIMIT"
+  | "RATE_LIMIT_EXCEEDED"
   | "AUDIT_PARSE_ERROR"
   | "DB_UNAVAILABLE"
   | "INTERNAL_ERROR";
@@ -77,6 +78,20 @@ export class UpstreamRateLimitError extends AuditError {
     super(
       "UPSTREAM_RATE_LIMIT",
       `${service} rate limit exceeded. Please retry later.`,
+      429,
+      retryAfter,
+    );
+  }
+}
+
+export class RateLimitExceededError extends AuditError {
+  constructor(limit: number, resetAt?: number) {
+    const retryAfter = resetAt
+      ? Math.max(0, Math.ceil((resetAt - Date.now()) / 1000))
+      : undefined;
+    super(
+      "RATE_LIMIT_EXCEEDED",
+      `Rate limit exceeded. Limit: ${limit} audits per hour. Please retry later.`,
       429,
       retryAfter,
     );

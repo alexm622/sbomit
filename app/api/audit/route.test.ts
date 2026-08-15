@@ -5,6 +5,7 @@ import { POST } from "./route";
 import type { AuditResult } from "@/app/lib/audit";
 
 const mockRunAudit = vi.fn();
+const mockCheckRateLimit = vi.fn();
 
 vi.mock("@/app/lib/run-audit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/app/lib/run-audit")>();
@@ -13,6 +14,15 @@ vi.mock("@/app/lib/run-audit", async (importOriginal) => {
     runAudit: (...args: unknown[]) => mockRunAudit(...args),
   };
 });
+
+vi.mock("@/app/lib/rate-limit", () => ({
+  checkRateLimit: (...args: unknown[]) => mockCheckRateLimit(...args),
+  DEFAULT_RATE_LIMIT: { limit: 10, windowMinutes: 60 },
+}));
+
+vi.mock("@/app/lib/db", () => ({
+  getDb: vi.fn(() => Promise.resolve(env.DB)),
+}));
 
 const baseResult: AuditResult = {
   name: "lodash",
@@ -83,6 +93,15 @@ async function setupSchema(db: D1Database) {
       `FOREIGN KEY (audit_id) REFERENCES package_audits(id) ON DELETE CASCADE` +
       `);`,
   );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS rate_limits (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
+      `identifier TEXT NOT NULL,` +
+      `window_start INTEGER NOT NULL,` +
+      `count INTEGER NOT NULL DEFAULT 0,` +
+      `UNIQUE(identifier, window_start)` +
+      `);`,
+  );
 }
 
 describe("POST /api/audit", () => {
@@ -97,12 +116,19 @@ describe("POST /api/audit", () => {
       result: baseResult,
       meta: baseMeta,
     });
+    mockCheckRateLimit.mockResolvedValue({
+      allowed: true,
+      limit: 10,
+      remaining: 9,
+      resetAt: Date.now() + 60 * 60 * 1000,
+    });
   });
 
   afterEach(async () => {
     await reset();
     await setupSchema(db);
     mockRunAudit.mockReset();
+    mockCheckRateLimit.mockReset();
   });
 
   it("returns a fresh audit", async () => {
@@ -135,10 +161,15 @@ describe("POST /api/audit", () => {
     expect(data.meta.reportId).toBe(2);
     expect(data.result.name).toBe("lodash");
     expect(data.meta.interactions).toHaveLength(1);
-    expect(mockRunAudit).toHaveBeenCalledWith({
-      libraryUrl: "https://www.npmjs.com/package/lodash",
-      prompt: undefined,
-    });
+    expect(mockRunAudit).toHaveBeenCalledWith(
+      {
+        libraryUrl: "https://www.npmjs.com/package/lodash",
+        version: undefined,
+        prompt: undefined,
+      },
+      undefined,
+      expect.anything(),
+    );
   });
 
   it("passes the custom prompt through", async () => {
@@ -156,10 +187,15 @@ describe("POST /api/audit", () => {
     });
 
     await POST(request);
-    expect(mockRunAudit).toHaveBeenCalledWith({
-      libraryUrl: "https://www.npmjs.com/package/lodash",
-      prompt: "focus on security",
-    });
+    expect(mockRunAudit).toHaveBeenCalledWith(
+      {
+        libraryUrl: "https://www.npmjs.com/package/lodash",
+        version: undefined,
+        prompt: "focus on security",
+      },
+      undefined,
+      expect.anything(),
+    );
   });
 
   it("returns 400 for missing libraryUrl", async () => {

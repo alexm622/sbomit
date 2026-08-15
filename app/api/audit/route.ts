@@ -1,5 +1,16 @@
 import { runAudit, parseRequestBody } from "@/app/lib/run-audit";
-import { isAuditError } from "@/app/lib/errors";
+import { isAuditError, RateLimitExceededError } from "@/app/lib/errors";
+import { getDb } from "@/app/lib/db";
+import {
+  checkRateLimit,
+  DEFAULT_RATE_LIMIT,
+} from "@/app/lib/rate-limit";
+
+function getClientIp(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0].trim();
+  return request.headers.get("cf-connecting-ip") ?? "anonymous";
+}
 
 export async function POST(request: Request) {
   try {
@@ -11,9 +22,24 @@ export async function POST(request: Request) {
       throw new MissingInputError("Invalid JSON body.");
     }
 
-    const { libraryUrl, prompt } = parseRequestBody(body);
+    const { libraryUrl, version, prompt } = parseRequestBody(body);
 
-    const { result, meta } = await runAudit({ libraryUrl, prompt });
+    const db = await getDb();
+    const rateLimit = await checkRateLimit(
+      db,
+      getClientIp(request),
+      DEFAULT_RATE_LIMIT.limit,
+      DEFAULT_RATE_LIMIT.windowMinutes,
+    );
+    if (!rateLimit.allowed) {
+      throw new RateLimitExceededError(rateLimit.limit, rateLimit.resetAt);
+    }
+
+    const { result, meta } = await runAudit(
+      { libraryUrl, version, prompt },
+      undefined,
+      db,
+    );
 
     return Response.json(
       {

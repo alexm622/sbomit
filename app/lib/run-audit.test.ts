@@ -10,6 +10,8 @@ const mockGetLlmConfig = vi.fn();
 const mockSaveAuditReport = vi.fn();
 const mockGetDb = vi.fn();
 const mockDbFirst = vi.fn();
+const mockGetCachedAuditReport = vi.fn();
+const mockEnrichLibrary = vi.fn();
 
 vi.mock("./audit", () => {
   return {
@@ -30,6 +32,18 @@ vi.mock("./db", () => {
   return {
     getDb: () => mockGetDb(),
     saveAuditReport: (...args: unknown[]) => mockSaveAuditReport(...args),
+  };
+});
+
+vi.mock("./cache", () => {
+  return {
+    getCachedAuditReport: (...args: unknown[]) => mockGetCachedAuditReport(...args),
+  };
+});
+
+vi.mock("./signals", () => {
+  return {
+    enrichLibrary: (...args: unknown[]) => mockEnrichLibrary(...args),
   };
 });
 
@@ -76,11 +90,13 @@ describe("runAudit", () => {
       fileCount: 1,
       totalSize: 100,
     });
+    mockEnrichLibrary.mockResolvedValue({ advisories: [] });
     mockComputeCacheKey.mockResolvedValue("cache-key-123");
     mockGetDb.mockResolvedValue({
       prepare: () => ({ bind: () => ({ first: mockDbFirst }) }),
     });
     mockDbFirst.mockResolvedValue(null);
+    mockGetCachedAuditReport.mockResolvedValue(null);
     mockRunLibraryAudit.mockImplementation(
       async (
         _context: unknown,
@@ -107,6 +123,7 @@ describe("runAudit", () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
+
 
   it("emits step and llm events during a codebase audit", async () => {
     const events: AuditEvent[] = [];
@@ -140,12 +157,13 @@ describe("runAudit", () => {
   });
 
   it("returns a cached result without running the LLM", async () => {
-    mockDbFirst.mockResolvedValue({
+    mockGetCachedAuditReport.mockResolvedValue({
       id: 5,
       audit_id: 3,
       result_json: JSON.stringify(baseResult),
       interaction_json: JSON.stringify([baseInteraction]),
       codebase_inspected: 1,
+      created_at: new Date().toISOString(),
     });
 
     const events: AuditEvent[] = [];

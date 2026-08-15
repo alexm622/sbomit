@@ -225,6 +225,7 @@ insert dependency rows in one `db.batch` (matching the existing
 | `PackageNotFoundError`   | npm adapter             | 404    | package not found                |
 | `RepoNotFoundError`      | GitHub adapter          | 404    | repo not found / private         |
 | `UpstreamRateLimitError` | adapters / OpenAI       | 429    | retry after N seconds            |
+| `RateLimitExceededError` | `/api/audit`            | 429    | retry after N seconds            |
 | `EnrichmentUnavailable`  | enrichment              | —      | non-fatal; signal omitted        |
 | `AuditParseError`        | LLM stage               | 502    | audit failed, safe to retry      |
 | `DbUnavailableError`     | `getDb()` (no binding)  | 500    | misconfiguration (already exist) |
@@ -305,10 +306,10 @@ anonymous. Turnstile gate if abuse appears (see TODO §4.4).
 | ----------------- | --------------------------------- | -------- |
 | Intake            | `app/api/audit/route.ts`          | shipped  |
 | Resolution        | `app/lib/audit.ts`                | shipped  |
-| Enrichment        | `app/lib/signals.ts` (new)        | planned  |
-| Cache             | `app/lib/cache.ts` (new)          | planned  |
-| LLM audit         | `app/lib/openai.ts`               | shipped  |
+| Enrichment        | `app/lib/signals.ts` (new)        | shipped  |
+| Cache             | `app/lib/cache.ts` (new)          | shipped  |
+| LLM audit         | `app/lib/llm.ts`                  | shipped  |
 | Validation        | `app/lib/audit.ts` (schema)       | shipped, post-checks shipped |
 | Persistence       | `app/lib/db.ts`, `migrations/`    | shipped  |
-| Rate limiting     | `app/lib/rate-limit.ts` (new)     | planned  |
-| Scoring rubric    | `app/lib/score.ts` (new)          | planned  |
+| Rate limiting     | `app/lib/rate-limit.ts` (new)     | shipped  |
+| Scoring rubric    | `app/lib/score.ts` (new)          | shipped  |

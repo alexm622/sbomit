@@ -872,7 +872,7 @@ export default function Home() {
                 <TabsTrigger value="cves">
                   CVEs
                   <Badge variant="secondary" className="ml-2">
-                    {result.cves.length}
+                    {result.cves?.length ?? 0}
                   </Badge>
                 </TabsTrigger>
               </TabsList>
@@ -1152,7 +1152,7 @@ export default function Home() {
               </TabsContent>
 
               <TabsContent value="cves" className="space-y-4">
-                {result.cves.length === 0 ? (
+                {(result.cves?.length ?? 0) === 0 ? (
                   <Card>
                     <CardContent className="py-8 text-center text-sm text-muted-foreground">
                       No known CVEs or security advisories were found for this
@@ -1160,7 +1160,7 @@ export default function Home() {
                     </CardContent>
                   </Card>
                 ) : (
-                  result.cves.map((cve, index) => (
+                  result.cves?.map((cve, index) => (
                     <Card key={index}>
                       <CardHeader>
                         <div className="flex items-start justify-between gap-4">

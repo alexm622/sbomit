@@ -14,6 +14,9 @@ import {
   sourceTokenBudget,
 } from "./codebase";
 import type { Cve } from "./cve";
+import { computeScore } from "./score";
+import type { EnrichmentSignals } from "./signals";
+import { formatSignalsForPrompt } from "./signals";
 
 const riskSchema = z.object({
   severity: z.enum(["critical", "high", "medium", "low"]),
@@ -127,6 +130,7 @@ export interface LibraryContext {
   metadata: NpmMetadata | GitHubRepo;
   codebase?: CodebaseSnapshot;
   cves: Cve[];
+  signals?: EnrichmentSignals;
 }
 
 const MAX_RISKS = 20;
@@ -245,9 +249,10 @@ export function buildAuditPrompt(
     prompt ||
     "Audit this library for security, license compatibility, and dependency risks. Return a concise, structured report.";
 
+  const advisories = context.signals?.advisories ?? context.cves ?? [];
   const cveSection =
-    context.cves.length > 0
-      ? `\n\nKnown security advisories for ${context.name}@${context.version}:\n${context.cves
+    advisories.length > 0
+      ? `\n\nKnown security advisories for ${context.name}@${context.version}:\n${advisories
           .map(
             (cve) =>
               `- ${cve.id} (${cve.severity ?? "unknown"}): ${cve.title}` +
@@ -256,7 +261,11 @@ export function buildAuditPrompt(
           .join("\n")}`
       : "\n\nNo known security advisories were found for this version.";
 
-  return `${resolvedPrompt}\n\nLibrary URL: ${context.url}\nSource: ${context.source}\nName: ${context.name}\nVersion: ${context.version}${cveSection}\n\nMetadata:\n\`\`\`json\n${truncateMetadata(context.metadata)}\n\`\`\``;
+  const signalsSection = context.signals
+    ? `\n\nDeterministic enrichment signals:\n${formatSignalsForPrompt(context.signals)}`
+    : "";
+
+  return `${resolvedPrompt}\n\nLibrary URL: ${context.url}\nSource: ${context.source}\nName: ${context.name}\nVersion: ${context.version}${cveSection}${signalsSection}\n\nMetadata:\n\`\`\`json\n${truncateMetadata(context.metadata)}\n\`\`\``;
 }
 
 export async function resolveLibrary(
@@ -364,115 +373,6 @@ export function buildCodebasePrompt(context: LibraryContext): string {
   return formatSnapshotForLlm(context.codebase);
 }
 
-function severityDeduction(
-  items: Array<{ severity: string | null | undefined }>,
-  weights: Record<string, number>,
-  maxDeduction: number,
-): number {
-  let total = 0;
-  for (const item of items) {
-    const key = item.severity ?? "default";
-    total += weights[key] ?? weights.default ?? 0;
-  }
-  return Math.min(total, maxDeduction);
-}
-
-function daysSince(dateString: string | undefined): number | undefined {
-  if (!dateString) return undefined;
-  const parsed = Date.parse(dateString);
-  if (Number.isNaN(parsed)) return undefined;
-  const ms = Date.now() - parsed;
-  return Math.floor(ms / (1000 * 60 * 60 * 24));
-}
-
-function getLastPublishedDays(
-  result: AuditResult,
-  context: LibraryContext,
-): number | undefined {
-  if (context.source === "npm") {
-    const meta = context.metadata as NpmMetadata;
-    const versionTime = meta.time?.[result.version];
-    const fallback = meta.time?.["modified"] ?? meta.time?.["created"];
-    return daysSince(versionTime) ?? daysSince(fallback);
-  }
-
-  if (context.source === "github") {
-    const repo = context.metadata as GitHubRepo;
-    return daysSince(repo.pushed_at) ?? daysSince(repo.updated_at);
-  }
-
-  return undefined;
-}
-
-function dependencyHealthScore(result: AuditResult): number {
-  const direct = result.dependencies.filter((d) => !d.transitive).length;
-  const transitive = result.dependencies.filter((d) => d.transitive).length;
-
-  let score = 0;
-  if (direct === 0) score = 10;
-  else if (direct <= 5) score = 8;
-  else if (direct <= 15) score = 5;
-  else score = 2;
-
-  if (transitive > 20) score -= 2;
-  if (transitive > 50) score -= 2;
-
-  return Math.max(0, score);
-}
-
-function maintenanceScore(
-  result: AuditResult,
-  context: LibraryContext,
-): number {
-  const days = getLastPublishedDays(result, context);
-  if (days === undefined) return 5; // unknown, partial credit
-  if (days <= 365) return 10;
-  if (days <= 730) return 7;
-  if (days <= 1095) return 4;
-  return 1;
-}
-
-export function computeScore(
-  result: AuditResult,
-  context: LibraryContext,
-): number {
-  // Security: 0-40 points based on objective CVEs and evidence-backed findings.
-  const cveDeduction = severityDeduction(
-    result.cves,
-    { critical: 15, high: 10, medium: 5, low: 2, default: 4 },
-    40,
-  );
-  const findingDeduction = severityDeduction(
-    result.deepDiveFindings,
-    { critical: 10, high: 6, medium: 3, low: 1, default: 2 },
-    25,
-  );
-  const securityScore = Math.max(0, 40 - cveDeduction - findingDeduction);
-
-  // Transparency: 0-30 points. Source inspection is a strong, objective signal.
-  const sourceInspected =
-    !!context.codebase && context.codebase.files.length > 0;
-  const transparencyScore = sourceInspected ? 30 : 10;
-
-  // License: 0-10 points.
-  const licenseScore = result.license.compatible ? 10 : 0;
-
-  // Maintenance: 0-10 points from actual publish/push dates.
-  const maintenance = maintenanceScore(result, context);
-
-  // Dependency health: 0-10 points from dependency counts.
-  const dependencyHealth = dependencyHealthScore(result);
-
-  const score =
-    securityScore +
-    transparencyScore +
-    licenseScore +
-    maintenance +
-    dependencyHealth;
-
-  return Math.min(100, Math.max(0, Math.round(score)));
-}
-
 export function postProcessAuditResult(
   result: AuditResult,
   context: LibraryContext,
@@ -502,9 +402,9 @@ export function postProcessAuditResult(
   const name = result.name || context.name;
   const version = result.version || context.version;
 
-  // Compute the score deterministically from findings instead of trusting
-  // the LLM, which has been defaulting to an overly narrow low range.
-  const score = computeScore(result, context);
+  // Compute the score deterministically from findings and signals instead of
+  // trusting the LLM, which has been defaulting to an overly narrow low range.
+  const score = computeScore(result, context, context.signals);
 
   return {
     ...result,

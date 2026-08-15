@@ -1,19 +1,15 @@
 import {
   computeCacheKey,
-  parseGitHubUrl,
   resolveCodebase,
   resolveLibrary,
   type AuditResult,
   type LibraryContext,
 } from "./audit";
-import {
-  fetchGitHubVulnerabilities,
-  fetchNpmVulnerabilities,
-  type Cve,
-} from "./cve";
 import { getDb, saveAuditReport, type StoredAuditReport } from "./db";
 import { getLlmConfig, runLibraryAudit, type LlmInteraction } from "./llm";
 import { MissingInputError } from "./errors";
+import { enrichLibrary } from "./signals";
+import { getCachedAuditReport } from "./cache";
 
 export type AuditStep =
   | "resolve"
@@ -88,7 +84,22 @@ export function parseRequestBody(
 }
 
 function storedReportToResult(report: StoredAuditReport): AuditResult {
-  return JSON.parse(report.result_json) as AuditResult;
+  const parsed = JSON.parse(report.result_json) as Partial<AuditResult>;
+  return {
+    name: parsed.name ?? "",
+    version: parsed.version ?? "",
+    score: parsed.score ?? 0,
+    summary: parsed.summary ?? "",
+    risks: parsed.risks ?? [],
+    investigationAreas: parsed.investigationAreas ?? [],
+    deepDiveFindings: parsed.deepDiveFindings ?? [],
+    dependencies: parsed.dependencies ?? [],
+    license: parsed.license ?? { type: "", compatible: true, note: "" },
+    maintainers: parsed.maintainers ?? [],
+    lastPublished: parsed.lastPublished ?? "",
+    weeklyDownloads: parsed.weeklyDownloads ?? "",
+    cves: parsed.cves ?? [],
+  };
 }
 
 function storedReportToInteractions(
@@ -146,33 +157,10 @@ async function emitEta(
   });
 }
 
-async function fetchCves(context: LibraryContext): Promise<Cve[]> {
-  try {
-    if (context.source === "npm") {
-      return await fetchNpmVulnerabilities(context.name, context.version);
-    }
-    const gh = parseGitHubUrl(context.url);
-    if (gh) {
-      return await fetchGitHubVulnerabilities(
-        gh.owner,
-        gh.repo,
-        context.version,
-      );
-    }
-    return [];
-  } catch (error) {
-    // CVE fetching is best-effort; do not fail the audit if OSV is down.
-    console.error(
-      "Failed to fetch CVEs:",
-      error instanceof Error ? error.message : String(error),
-    );
-    return [];
-  }
-}
-
 export async function runAudit(
   input: RunAuditInput,
   onEvent?: AuditEventHandler,
+  db?: D1Database,
 ): Promise<RunAuditResult> {
   const { libraryUrl, version, prompt } = input;
   const startedAt = Date.now();
@@ -184,30 +172,38 @@ export async function runAudit(
   await emitStep(onEvent, "download", "started");
   const codebase = await resolveCodebase(context);
   const codebaseInspected = !!codebase && codebase.files.length > 0;
-  const cves = await fetchCves(context);
-  const fullContext: LibraryContext = {
+  const baseContext: LibraryContext = {
     ...context,
-    cves,
     ...(codebase ? { codebase } : {}),
   };
+
+  // Enrichment runs in parallel with codebase download and is failure-tolerant.
+  const signals = await enrichLibrary(baseContext);
+  const fullContext: LibraryContext = {
+    ...baseContext,
+    signals,
+  };
+
+  const advisoryCount = signals.advisories.length;
   await emitStep(
     onEvent,
     "download",
     "completed",
     codebase
-      ? `${codebase.fileCount} files, ${codebase.totalSize} bytes${cves.length > 0 ? `, ${cves.length} CVEs` : ""}`
-      : cves.length > 0
-        ? `metadata only, ${cves.length} CVEs`
+      ? `${codebase.fileCount} files, ${codebase.totalSize} bytes${advisoryCount > 0 ? `, ${advisoryCount} advisories` : ""}`
+      : advisoryCount > 0
+        ? `metadata only, ${advisoryCount} advisories`
         : "metadata only",
   );
 
-  const db = await getDb();
+  const dbInstance = db ?? (await getDb());
   const cacheKey = await computeCacheKey(fullContext, prompt);
 
-  const cached = await db
-    .prepare("SELECT * FROM audit_reports WHERE cache_key = ? LIMIT 1")
-    .bind(cacheKey)
-    .first<StoredAuditReport>();
+  const cached = await getCachedAuditReport(
+    dbInstance,
+    cacheKey,
+    fullContext.version,
+  );
 
   if (cached) {
     const result = storedReportToResult(cached);
@@ -242,7 +238,7 @@ export async function runAudit(
   await emitStep(onEvent, "validate", "completed");
 
   await emitStep(onEvent, "persist", "started");
-  const { auditId, reportId } = await saveAuditReport(db, {
+  const { auditId, reportId } = await saveAuditReport(dbInstance, {
     name: result.name,
     version: result.version,
     source: fullContext.source,
