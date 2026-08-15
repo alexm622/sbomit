@@ -47,6 +47,7 @@ const githubMetadata = {
   watchers_count: 220000,
   forks_count: 45000,
   open_issues_count: 1200,
+  default_branch: "main",
   owner: { login: "facebook" },
   html_url: "https://github.com/facebook/react",
 };
@@ -243,6 +244,46 @@ describe("resolveLibrary", () => {
     );
     expect(context.source).toBe("github");
     expect(context.version).toBe("v18.0.0");
+  });
+
+  it("fetches package.json manifest for GitHub repos", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response(JSON.stringify(githubMetadata), { status: 200 }),
+      },
+      {
+        url: "https://raw.githubusercontent.com/facebook/react/main/package.json",
+        response: new Response(
+          JSON.stringify({
+            dependencies: { "object-assign": "^4.1.1" },
+            devDependencies: { jest: "^29.0.0" },
+          }),
+          { status: 200 },
+        ),
+      },
+    ]);
+
+    const context = await resolveLibrary("https://github.com/facebook/react");
+    const metadata = context.metadata as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    expect(metadata.dependencies).toEqual({ "object-assign": "^4.1.1" });
+    expect(metadata.devDependencies).toEqual({ jest: "^29.0.0" });
+  });
+
+  it("handles missing package.json for GitHub repos gracefully", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.github.com/repos/facebook/react",
+        response: new Response(JSON.stringify(githubMetadata), { status: 200 }),
+      },
+      {
+        url: "https://raw.githubusercontent.com/facebook/react/main/package.json",
+        response: new Response("Not Found", { status: 404 }),
+      },
+    ]);
+
+    const context = await resolveLibrary("https://github.com/facebook/react");
+    expect(context.source).toBe("github");
   });
 });
 

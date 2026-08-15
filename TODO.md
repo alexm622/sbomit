@@ -51,8 +51,8 @@ risk — and persists dependency trees for ongoing tracking.
 
 - [x] Persist full audit results to D1 (new `audit_reports` table) so reports
       survive reloads and can be retrieved by ID.
-- [ ] Shareable report URLs (`/report/[id]`) backed by stored audits.
-- [ ] Basic request validation + rate limiting on API routes (per-IP token
+- [x] Shareable report URLs (`/report/[id]`) backed by stored audits.
+- [x] Basic request validation + rate limiting on API routes (per-IP token
       bucket; Cloudflare Workers compatible).
 - [x] Error handling polish: typed error responses, user-friendly messages
       for npm 404s, GitHub rate limits, OpenAI failures.
@@ -63,12 +63,13 @@ risk — and persists dependency trees for ongoing tracking.
 ### 3.2 v1 — Trust & Depth
 
 - [ ] npm audit data integration (registry advisories) merged with AI output.
+- [x] GitHub manifest fetch (`package.json` from default branch) for dependency parity.
 - [ ] GitHub deeper signals: release cadence, issue SLA, bus factor via API.
 - [ ] License compatibility matrix (declare project license, get verdict).
 - [ ] Diff audits between two versions of a package.
 - [ ] Export report as Markdown / JSON download.
 - [ ] Transitive dependency resolution (walk lockfile-style graph, depth-capped).
-- [ ] Caching layer: dedupe identical audits within N hours (KV or D1 lookup).
+- [x] Caching layer: dedupe identical audits within N hours (D1 lookup).
 
 ### 3.3 v2 — Product Surface
 
@@ -140,21 +141,24 @@ Planned:
 ```
 app/
   layout.tsx / page.tsx          # landing + audit form (client)
-  report/[id]/page.tsx           # planned: persisted report view
+  report/[id]/page.tsx           # shipped: persisted report view
+  audits/page.tsx                # shipped: history + inline report view
   api/
     audit/route.ts               # shipped
     dependencies/route.ts        # shipped
     search/route.ts              # shipped
-    reports/[id]/route.ts        # planned
+    audits/[id]/route.ts         # shipped
     health/route.ts              # planned
   components/ui/                 # primitives (shipped)
-  components/                    # planned: report cards, watchlist UI
+  components/                    # shipped: report-view, audit-jobs, site-header
   lib/
     audit.ts                     # resolution + schemas (shipped)
-    openai.ts                    # structured-output client (shipped)
-    db.ts                        # D1 helpers (shipped; extend for reports)
-    cache.ts                     # planned: KV/dedupe helpers
-    rate-limit.ts                # planned
+    llm.ts                       # structured-output client (shipped)
+    db.ts                        # D1 helpers (shipped)
+    signals.ts                   # shipped: enrichment signals
+    score.ts                     # shipped: deterministic scoring
+    cache.ts                     # shipped: D1 dedupe helpers
+    rate-limit.ts                # shipped
 migrations/                      # sequential SQL migrations
 scripts/apply-migrations.sh      # shipped
 wrangler.jsonc                   # bindings: D1, (KV), vars

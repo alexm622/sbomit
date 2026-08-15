@@ -23,36 +23,31 @@ function extractDependencies(
 ): StoredDependency[] {
   const deps: StoredDependency[] = [];
 
-  if (context.source === "npm") {
-    const metadata = context.metadata as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-      peerDependencies?: Record<string, string>;
-      optionalDependencies?: Record<string, string>;
-    };
+  const metadata = context.metadata as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  };
 
-    for (const [name, version] of Object.entries(metadata.dependencies || {})) {
-      deps.push({ name, version, dependency_type: "dependencies" });
-    }
-    for (const [name, version] of Object.entries(
-      metadata.devDependencies || {},
-    )) {
-      deps.push({ name, version, dependency_type: "devDependencies" });
-    }
-    for (const [name, version] of Object.entries(
-      metadata.peerDependencies || {},
-    )) {
-      deps.push({ name, version, dependency_type: "peerDependencies" });
-    }
-    for (const [name, version] of Object.entries(
-      metadata.optionalDependencies || {},
-    )) {
-      deps.push({ name, version, dependency_type: "optionalDependencies" });
-    }
+  for (const [name, version] of Object.entries(metadata.dependencies || {})) {
+    deps.push({ name, version, dependency_type: "dependencies" });
   }
-
-  // GitHub repos don't publish dependency manifests via the basic repo API,
-  // so we store an empty direct-dependency list for that source.
+  for (const [name, version] of Object.entries(
+    metadata.devDependencies || {},
+  )) {
+    deps.push({ name, version, dependency_type: "devDependencies" });
+  }
+  for (const [name, version] of Object.entries(
+    metadata.peerDependencies || {},
+  )) {
+    deps.push({ name, version, dependency_type: "peerDependencies" });
+  }
+  for (const [name, version] of Object.entries(
+    metadata.optionalDependencies || {},
+  )) {
+    deps.push({ name, version, dependency_type: "optionalDependencies" });
+  }
 
   return deps;
 }

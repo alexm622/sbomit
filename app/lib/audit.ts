@@ -118,8 +118,15 @@ interface GitHubRepo {
   watchers_count: number;
   forks_count: number;
   open_issues_count: number;
+  default_branch?: string;
   owner: { login: string };
   html_url: string;
+  // Fetched separately from raw.githubusercontent.com so GitHub audits get
+  // dependency data comparable to npm audits.
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
 }
 
 export interface LibraryContext {
@@ -240,6 +247,38 @@ export async function computeCacheKey(
     .join("");
 }
 
+interface GitHubPackageJson {
+  name?: string;
+  version?: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+}
+
+async function fetchGitHubPackageJson(
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<Partial<GitHubPackageJson> | undefined> {
+  try {
+    const res = await fetch(
+      `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/package.json`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "sbomit-audit",
+        },
+        next: { revalidate: 0 },
+      },
+    );
+    if (!res.ok) return undefined;
+    return (await res.json()) as Partial<GitHubPackageJson>;
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildAuditPrompt(
   context: LibraryContext,
   userPrompt?: string,
@@ -322,12 +361,25 @@ export async function resolveLibrary(
       throw new RepoNotFoundError(gh.owner, gh.repo);
     }
     const data = (await res.json()) as GitHubRepo;
+    const resolvedRef = ref ?? data.default_branch ?? "HEAD";
+    const manifest = await fetchGitHubPackageJson(
+      gh.owner,
+      gh.repo,
+      resolvedRef,
+    );
+    const metadata: GitHubRepo = {
+      ...data,
+      dependencies: manifest?.dependencies,
+      devDependencies: manifest?.devDependencies,
+      peerDependencies: manifest?.peerDependencies,
+      optionalDependencies: manifest?.optionalDependencies,
+    };
     return {
       source: "github",
       url: libraryUrl,
       name: data.full_name,
       version: ref ?? "latest",
-      metadata: data,
+      metadata,
       cves: [],
     };
   }
