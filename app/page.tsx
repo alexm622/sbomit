@@ -144,6 +144,20 @@ function normalizeUrl(value: string): string {
   return trimmed;
 }
 
+function isNpmPackageInput(value: string): boolean {
+  const trimmed = value.trim();
+  if (looksLikePackageName(trimmed)) return true;
+  try {
+    const parsed = new URL(trimmed);
+    return (
+      parsed.hostname.endsWith("npmjs.com") &&
+      parsed.pathname.startsWith("/package/")
+    );
+  } catch {
+    return false;
+  }
+}
+
 const pipelineSteps: {
   step: AuditStep;
   icon: React.ElementType;
@@ -208,6 +222,11 @@ export default function Home() {
   const [showSuggestions, setShowSuggestions] = React.useState(false);
   const [highlightedIndex, setHighlightedIndex] = React.useState(-1);
   const suggestionsRef = React.useRef<HTMLDivElement>(null);
+  const [versions, setVersions] = React.useState<string[]>([]);
+  const [versionsLoading, setVersionsLoading] = React.useState(false);
+  const [versionsLatest, setVersionsLatest] = React.useState<string | null>(
+    null,
+  );
 
   const activeJob = activeJobId
     ? jobs.find((job) => job.id === activeJobId)
@@ -252,6 +271,41 @@ export default function Home() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  React.useEffect(() => {
+    const trimmed = libraryUrl.trim();
+    const timer = setTimeout(async () => {
+      if (!trimmed || !isNpmPackageInput(trimmed)) {
+        setVersions([]);
+        setVersionsLatest(null);
+        return;
+      }
+      setVersionsLoading(true);
+      try {
+        const res = await fetch(
+          `/api/versions?q=${encodeURIComponent(trimmed)}`,
+        );
+        if (!res.ok) {
+          setVersions([]);
+          setVersionsLatest(null);
+          return;
+        }
+        const data = (await res.json()) as {
+          versions: string[];
+          latest: string | null;
+        };
+        setVersions(data.versions || []);
+        setVersionsLatest(data.latest || null);
+      } catch {
+        setVersions([]);
+        setVersionsLatest(null);
+      } finally {
+        setVersionsLoading(false);
+      }
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [libraryUrl]);
 
   const selectSuggestion = React.useCallback((name: string) => {
     setLibraryUrl(`https://www.npmjs.com/package/${name}`);
@@ -442,13 +496,30 @@ export default function Home() {
                   </div>
 
                   <div className="relative">
-                    <Tag className="absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-                    <Input
+                    <Tag className="pointer-events-none absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+                    <select
                       value={version}
                       onChange={(e) => setVersion(e.target.value)}
-                      placeholder="Version (optional), e.g. 4.17.20"
-                      className="h-12 border-0 bg-muted/50 pl-11 text-base text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                    />
+                      disabled={versionsLoading || versions.length === 0}
+                      aria-label="Version"
+                      className="h-12 w-full appearance-none rounded-lg border-0 bg-muted/50 pl-11 pr-10 text-base text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <option value="">
+                        {versionsLoading
+                          ? "Loading versions..."
+                          : versions.length === 0
+                            ? "Version (optional)"
+                            : versionsLatest
+                              ? `Latest (${versionsLatest})`
+                              : "Latest"}
+                      </option>
+                      {versions.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronRight className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-muted-foreground" />
                   </div>
 
                   <div className="relative">

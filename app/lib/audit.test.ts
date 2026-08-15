@@ -18,6 +18,11 @@ import {
 const npmMetadata = {
   name: "lodash",
   "dist-tags": { latest: "4.17.21" },
+  time: {
+    created: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    modified: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    "4.17.21": new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+  },
   versions: {
     "4.17.21": {
       name: "lodash",
@@ -338,12 +343,69 @@ describe("postProcessAuditResult", () => {
     cves: [],
   };
 
-  it("clamps score to an integer 0-100", () => {
+  it("computes a deterministic score from findings", () => {
     const result = postProcessAuditResult(
       { ...baseResult, score: 150.3 },
       context,
     );
+    // No risks/CVEs, compatible license, no source inspection, recent, no deps -> 80.
+    expect(result.score).toBe(80);
+  });
+
+  it("rewards source-code inspection with a higher score", () => {
+    const inspectedContext = {
+      ...context,
+      codebase: {
+        fileCount: 1,
+        totalSize: 100,
+        files: [{ path: "index.js", size: 100, content: "" }],
+      },
+    };
+    const result = postProcessAuditResult(baseResult, inspectedContext);
     expect(result.score).toBe(100);
+  });
+
+  it("lowers the score for CVEs and evidence-backed findings", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        cves: [
+          {
+            id: "CVE-1",
+            aliases: [],
+            severity: "high",
+            title: "Bad bug",
+            description: "desc",
+            published: null,
+            modified: null,
+            fixedVersion: "1.0.1",
+            references: [],
+          },
+        ],
+        deepDiveFindings: [
+          {
+            area: "Network",
+            file: "index.js",
+            issue: "Unexpected fetch",
+            evidence: "fetch(url)",
+            severity: "medium",
+          },
+        ],
+      },
+      context,
+    );
+    expect(result.score).toBeLessThan(80);
+  });
+
+  it("penalizes incompatible licenses", () => {
+    const result = postProcessAuditResult(
+      {
+        ...baseResult,
+        license: { type: "GPL-3.0", compatible: false, note: "" },
+      },
+      context,
+    );
+    expect(result.score).toBe(70);
   });
 
   it("deduplicates risks by title", () => {

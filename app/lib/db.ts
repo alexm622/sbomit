@@ -1,4 +1,5 @@
 import { DbUnavailableError } from "./errors";
+import type { AuditResult } from "./audit";
 
 export interface StoredDependency {
   name: string;
@@ -45,6 +46,69 @@ export interface StoredAuditReportSummary {
   started_at: string | null;
   finished_at: string | null;
   codebase_inspected: number;
+}
+
+export interface StoredRisk {
+  id: number;
+  report_id: number;
+  severity: string;
+  title: string;
+  description: string;
+}
+
+export interface StoredCve {
+  id: number;
+  report_id: number;
+  cve_id: string;
+  aliases: string | null;
+  severity: string | null;
+  title: string;
+  description: string;
+  published: string | null;
+  modified: string | null;
+  fixed_version: string | null;
+  references_json: string | null;
+}
+
+export interface StoredFinding {
+  id: number;
+  report_id: number;
+  area: string;
+  file: string;
+  issue: string;
+  evidence: string | null;
+  severity: string;
+}
+
+export interface StoredInvestigationArea {
+  id: number;
+  report_id: number;
+  area: string;
+  rationale: string;
+}
+
+export interface StoredInvestigationFile {
+  id: number;
+  area_id: number;
+  file: string;
+}
+
+export interface StoredReportDependency {
+  id: number;
+  report_id: number;
+  name: string;
+  version: string;
+  license: string;
+  transitive: number;
+}
+
+export interface StoredReportFindings {
+  risks: StoredRisk[];
+  cves: StoredCve[];
+  findings: StoredFinding[];
+  investigationAreas: StoredInvestigationArea[];
+  investigationFiles: StoredInvestigationFile[];
+  dependencies: StoredReportDependency[];
 }
 
 export async function getDb(env?: Record<string, unknown>): Promise<D1Database> {
@@ -116,6 +180,14 @@ export async function saveDependencyTree(
   return auditId;
 }
 
+function parseAuditResult(resultJson: string): AuditResult | undefined {
+  try {
+    return JSON.parse(resultJson) as AuditResult;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function saveAuditReport(
   db: D1Database,
   input: {
@@ -163,6 +235,117 @@ export async function saveAuditReport(
   const reportId = reportResult.meta?.last_row_id as number | undefined;
   if (!reportId) {
     throw new Error("Failed to insert audit report.");
+  }
+
+  // Persist all findings into normalized tables for querying and history views.
+  const result = parseAuditResult(input.resultJson);
+    if (result) {
+    const statements: D1PreparedStatement[] = [];
+    const risks = result.risks ?? [];
+    const cves = result.cves ?? [];
+    const investigationAreas = result.investigationAreas ?? [];
+    const deepDiveFindings = result.deepDiveFindings ?? [];
+    const dependencies = result.dependencies ?? [];
+
+    if (risks.length > 0) {
+      const insertRisk = db.prepare(
+        `INSERT INTO audit_risks (report_id, severity, title, description) VALUES (?, ?, ?, ?)`,
+      );
+      for (const risk of risks) {
+        statements.push(
+          insertRisk.bind(reportId, risk.severity, risk.title, risk.description),
+        );
+      }
+    }
+
+    if (cves.length > 0) {
+      const insertCve = db.prepare(
+        `INSERT INTO audit_cves (report_id, cve_id, aliases, severity, title, description, published, modified, fixed_version, references_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const cve of cves) {
+        statements.push(
+          insertCve.bind(
+            reportId,
+            cve.id,
+            JSON.stringify(cve.aliases),
+            cve.severity,
+            cve.title,
+            cve.description,
+            cve.published,
+            cve.modified,
+            cve.fixedVersion,
+            JSON.stringify(cve.references),
+          ),
+        );
+      }
+    }
+
+    const filesByAreaId = new Map<number, string[]>();
+    if (investigationAreas.length > 0) {
+      const insertArea = db.prepare(
+        `INSERT INTO audit_investigation_areas (report_id, area, rationale) VALUES (?, ?, ?)`,
+      );
+      for (const area of investigationAreas) {
+        const areaResult = await insertArea
+          .bind(reportId, area.area, area.rationale)
+          .run<{ id: number }>();
+        const areaId = areaResult.meta?.last_row_id as number | undefined;
+        const files = area.files ?? [];
+        if (areaId && files.length > 0) {
+          filesByAreaId.set(areaId, files);
+        }
+      }
+    }
+
+    if (filesByAreaId.size > 0) {
+      const insertFile = db.prepare(
+        `INSERT INTO audit_investigation_files (area_id, file) VALUES (?, ?)`,
+      );
+      for (const [areaId, files] of filesByAreaId) {
+        for (const file of files) {
+          statements.push(insertFile.bind(areaId, file));
+        }
+      }
+    }
+
+    if (deepDiveFindings.length > 0) {
+      const insertFinding = db.prepare(
+        `INSERT INTO audit_findings (report_id, area, file, issue, evidence, severity) VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      for (const finding of deepDiveFindings) {
+        statements.push(
+          insertFinding.bind(
+            reportId,
+            finding.area,
+            finding.file,
+            finding.issue,
+            finding.evidence ?? null,
+            finding.severity,
+          ),
+        );
+      }
+    }
+
+    if (dependencies.length > 0) {
+      const insertDep = db.prepare(
+        `INSERT INTO audit_report_dependencies (report_id, name, version, license, transitive) VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const dep of dependencies) {
+        statements.push(
+          insertDep.bind(
+            reportId,
+            dep.name,
+            dep.version,
+            dep.license,
+            dep.transitive ? 1 : 0,
+          ),
+        );
+      }
+    }
+
+    if (statements.length > 0) {
+      await db.batch(statements);
+    }
   }
 
   return { auditId, reportId };
@@ -285,4 +468,111 @@ export async function getDependenciesByAuditId(
     .bind(auditId)
     .all<StoredDependency>();
   return result.results || [];
+}
+
+export async function getRisksByReportId(
+  db: D1Database,
+  reportId: number,
+): Promise<StoredRisk[]> {
+  const result = await db
+    .prepare("SELECT * FROM audit_risks WHERE report_id = ? ORDER BY id")
+    .bind(reportId)
+    .all<StoredRisk>();
+  return result.results || [];
+}
+
+export async function getCvesByReportId(
+  db: D1Database,
+  reportId: number,
+): Promise<StoredCve[]> {
+  const result = await db
+    .prepare("SELECT * FROM audit_cves WHERE report_id = ? ORDER BY id")
+    .bind(reportId)
+    .all<StoredCve>();
+  return result.results || [];
+}
+
+export async function getFindingsByReportId(
+  db: D1Database,
+  reportId: number,
+): Promise<StoredFinding[]> {
+  const result = await db
+    .prepare("SELECT * FROM audit_findings WHERE report_id = ? ORDER BY id")
+    .bind(reportId)
+    .all<StoredFinding>();
+  return result.results || [];
+}
+
+export async function getInvestigationAreasByReportId(
+  db: D1Database,
+  reportId: number,
+): Promise<StoredInvestigationArea[]> {
+  const result = await db
+    .prepare(
+      "SELECT * FROM audit_investigation_areas WHERE report_id = ? ORDER BY id",
+    )
+    .bind(reportId)
+    .all<StoredInvestigationArea>();
+  return result.results || [];
+}
+
+export async function getInvestigationFilesByAreaId(
+  db: D1Database,
+  areaId: number,
+): Promise<StoredInvestigationFile[]> {
+  const result = await db
+    .prepare(
+      "SELECT * FROM audit_investigation_files WHERE area_id = ? ORDER BY id",
+    )
+    .bind(areaId)
+    .all<StoredInvestigationFile>();
+  return result.results || [];
+}
+
+export async function getReportDependenciesByReportId(
+  db: D1Database,
+  reportId: number,
+): Promise<StoredReportDependency[]> {
+  const result = await db
+    .prepare(
+      "SELECT * FROM audit_report_dependencies WHERE report_id = ? ORDER BY id",
+    )
+    .bind(reportId)
+    .all<StoredReportDependency>();
+  return result.results || [];
+}
+
+export async function getAuditReportFindings(
+  db: D1Database,
+  reportId: number,
+): Promise<StoredReportFindings> {
+  const [risks, cves, findings, investigationAreas, dependencies] =
+    await Promise.all([
+      getRisksByReportId(db, reportId),
+      getCvesByReportId(db, reportId),
+      getFindingsByReportId(db, reportId),
+      getInvestigationAreasByReportId(db, reportId),
+      getReportDependenciesByReportId(db, reportId),
+    ]);
+
+  const areaIds = investigationAreas.map((a) => a.id);
+  const investigationFiles =
+    areaIds.length > 0
+      ? await db
+          .prepare(
+            `SELECT * FROM audit_investigation_files WHERE area_id IN (${areaIds.map(() => "?").join(", ")}) ORDER BY id`,
+          )
+          .bind(...areaIds)
+          .all<StoredInvestigationFile>()
+          .then((r) => r.results || [])
+      : [];
+
+  return {
+    risks,
+    cves,
+    findings,
+    investigationAreas,
+    investigationFiles,
+    dependencies,
+  };
 }

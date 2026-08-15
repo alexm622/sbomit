@@ -10,9 +10,10 @@ import {
   getAuditReportById,
   getAuditReportByAuditId,
   getAuditReportByCacheKey,
-  getDependenciesByAuditId,
   listAuditReports,
   deleteAuditReport,
+  getDependenciesByAuditId,
+  getAuditReportFindings,
 } from "./db";
 import { DbUnavailableError } from "./errors";
 
@@ -50,6 +51,72 @@ async function setupSchema(db: D1Database) {
       `codebase_inspected INTEGER DEFAULT 0,` +
       `created_at DATETIME DEFAULT CURRENT_TIMESTAMP,` +
       `FOREIGN KEY (audit_id) REFERENCES package_audits(id) ON DELETE CASCADE` +
+      `);`,
+  );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS audit_risks (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
+      `report_id INTEGER NOT NULL,` +
+      `severity TEXT NOT NULL,` +
+      `title TEXT NOT NULL,` +
+      `description TEXT NOT NULL,` +
+      `FOREIGN KEY (report_id) REFERENCES audit_reports(id) ON DELETE CASCADE` +
+      `);`,
+  );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS audit_cves (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
+      `report_id INTEGER NOT NULL,` +
+      `cve_id TEXT NOT NULL,` +
+      `aliases TEXT,` +
+      `severity TEXT,` +
+      `title TEXT NOT NULL,` +
+      `description TEXT NOT NULL,` +
+      `published TEXT,` +
+      `modified TEXT,` +
+      `fixed_version TEXT,` +
+      `references_json TEXT,` +
+      `FOREIGN KEY (report_id) REFERENCES audit_reports(id) ON DELETE CASCADE` +
+      `);`,
+  );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS audit_findings (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
+      `report_id INTEGER NOT NULL,` +
+      `area TEXT NOT NULL,` +
+      `file TEXT NOT NULL,` +
+      `issue TEXT NOT NULL,` +
+      `evidence TEXT,` +
+      `severity TEXT NOT NULL,` +
+      `FOREIGN KEY (report_id) REFERENCES audit_reports(id) ON DELETE CASCADE` +
+      `);`,
+  );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS audit_investigation_areas (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
+      `report_id INTEGER NOT NULL,` +
+      `area TEXT NOT NULL,` +
+      `rationale TEXT NOT NULL,` +
+      `FOREIGN KEY (report_id) REFERENCES audit_reports(id) ON DELETE CASCADE` +
+      `);`,
+  );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS audit_investigation_files (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
+      `area_id INTEGER NOT NULL,` +
+      `file TEXT NOT NULL,` +
+      `FOREIGN KEY (area_id) REFERENCES audit_investigation_areas(id) ON DELETE CASCADE` +
+      `);`,
+  );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS audit_report_dependencies (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
+      `report_id INTEGER NOT NULL,` +
+      `name TEXT NOT NULL,` +
+      `version TEXT NOT NULL,` +
+      `license TEXT NOT NULL,` +
+      `transitive INTEGER NOT NULL DEFAULT 0,` +
+      `FOREIGN KEY (report_id) REFERENCES audit_reports(id) ON DELETE CASCADE` +
       `);`,
   );
 }
@@ -213,6 +280,73 @@ describe("db helpers", () => {
 
     expect(await getAuditReportById(db, reportId)).toBeNull();
     expect(await getAuditById(db, auditId)).toBeNull();
+  });
+
+  it("saveAuditReport persists all findings into normalized tables", async () => {
+    const fullResult = {
+      name: "lodash",
+      version: "4.17.21",
+      score: 85,
+      summary: "Looks good.",
+      risks: [
+        { severity: "high", title: "Old dep", description: "a" },
+      ],
+      investigationAreas: [
+        { area: "Scripts", rationale: "r", files: ["package.json"] },
+      ],
+      deepDiveFindings: [
+        {
+          area: "Scripts",
+          file: "package.json",
+          issue: "postinstall script",
+          evidence: '"postinstall": "x"',
+          severity: "medium",
+        },
+      ],
+      dependencies: [
+        { name: "dep-a", version: "1.0.0", license: "MIT", transitive: false },
+      ],
+      license: { type: "MIT", compatible: true, note: "" },
+      maintainers: [],
+      lastPublished: "recently",
+      weeklyDownloads: "many",
+      cves: [
+        {
+          id: "CVE-2024-1234",
+          aliases: ["GHSA-abc"],
+          severity: "high",
+          title: "Bad bug",
+          description: "desc",
+          published: "2024-01-01",
+          modified: "2024-01-02",
+          fixedVersion: "1.0.1",
+          references: [{ type: "advisory", url: "https://example.com" }],
+        },
+      ],
+    };
+
+    const { reportId } = await saveAuditReport(db, {
+      name: "lodash",
+      version: "4.17.21",
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      model: "gpt-4o-mini",
+      score: 85,
+      resultJson: JSON.stringify(fullResult),
+    });
+
+    const findings = await getAuditReportFindings(db, reportId);
+    expect(findings.risks).toHaveLength(1);
+    expect(findings.risks[0].severity).toBe("high");
+    expect(findings.cves).toHaveLength(1);
+    expect(findings.cves[0].cve_id).toBe("CVE-2024-1234");
+    expect(findings.investigationAreas).toHaveLength(1);
+    expect(findings.investigationFiles).toHaveLength(1);
+    expect(findings.investigationFiles[0].file).toBe("package.json");
+    expect(findings.findings).toHaveLength(1);
+    expect(findings.findings[0].severity).toBe("medium");
+    expect(findings.dependencies).toHaveLength(1);
+    expect(findings.dependencies[0].name).toBe("dep-a");
   });
 
   it("saveAuditReport persists interaction_json", async () => {

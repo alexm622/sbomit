@@ -89,7 +89,7 @@ describe("runLibraryAudit", () => {
     });
 
     const { result, interactions } = await runLibraryAudit(context);
-    expect(result.score).toBe(86);
+    expect(result.score).toBe(75);
     expect(result.name).toBe("lodash");
     expect(interactions).toHaveLength(1);
     expect(interactions[0].provider).toBe("openai");
@@ -148,7 +148,7 @@ describe("runLibraryAudit", () => {
     const { result, interactions } = await runLibraryAudit(
       contextWithCodebase,
     );
-    expect(result.score).toBe(89);
+    expect(result.score).toBe(95);
     expect(interactions).toHaveLength(2);
     expect(mockParse).toHaveBeenCalledTimes(2);
   });
@@ -274,7 +274,7 @@ describe("runLibraryAudit", () => {
     vi.stubGlobal("fetch", mockFetch);
 
     const { result, interactions } = await runLibraryAudit(context);
-    expect(result.score).toBe(92);
+    expect(result.score).toBe(75);
     expect(interactions).toHaveLength(1);
     expect(interactions[0].provider).toBe("anthropic");
     expect(mockFetch).toHaveBeenCalledWith(
@@ -328,7 +328,7 @@ describe("runLibraryAudit", () => {
     vi.stubGlobal("fetch", mockFetch);
 
     const { result, interactions } = await runLibraryAudit(context);
-    expect(result.score).toBe(78);
+    expect(result.score).toBe(75);
     expect(interactions).toHaveLength(1);
     expect(interactions[0].provider).toBe("google");
     expect(mockFetch).toHaveBeenCalledWith(

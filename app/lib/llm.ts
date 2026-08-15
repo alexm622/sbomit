@@ -79,11 +79,15 @@ const DEEP_DIVE_PROMPT = `You are a software supply-chain auditor performing a d
 
 You previously identified key investigation areas. Now examine the FULL CONTENTS of the files listed for those areas and produce a complete, structured audit report.
 
-Be specific: cite file paths and line snippets as evidence. If a concern turns out to be benign after inspection, note that and lower the severity. If you find concrete issues, explain the exploit path or maintenance risk.`;
+Be specific: cite file paths and line snippets as evidence. If a concern turns out to be benign after inspection, note that and lower the severity. If you find concrete issues, explain the exploit path or maintenance risk.
+
+For the score field, use this rubric as a guide: start from 100, subtract roughly 20-25 for each critical issue, 10-15 for each high issue, 5-8 for each medium issue, and 2-3 for each low issue; subtract 10 for an incompatible license, and prefer the 70-95 range for well-maintained packages with only minor concerns. The final score shown to the user will be computed from your findings, so be consistent and proportional.`;
 
 const METADATA_ONLY_PROMPT = `You are a software supply-chain auditor reviewing library metadata. The full source code was not available, so base your assessment on the metadata alone.
 
-Identify areas that would be worth investigating if the source code were available, and produce a structured audit report. Be explicit that findings are inferred from metadata, not confirmed by code inspection.`;
+Identify areas that would be worth investigating if the source code were available, and produce a structured audit report. Be explicit that findings are inferred from metadata, not confirmed by code inspection.
+
+For the score field, use this rubric as a guide: start from 100, subtract roughly 20-25 for each critical issue, 10-15 for each high issue, 5-8 for each medium issue, and 2-3 for each low issue; subtract 10 for an incompatible license. Since source code was not inspected, reserve the top scores (90-100) for packages with no metadata red flags; the final score shown to the user will be computed from your findings.`;
 
 export function getLlmConfig(): LlmConfig {
   const provider = (
