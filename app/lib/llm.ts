@@ -19,16 +19,46 @@ import {
   type CodebaseSnapshot,
 } from "./codebase";
 import type { AuditEventHandler, AuditStep } from "./run-audit";
+import { type Provider, isProvider } from "./providers";
 
-export type Provider = "openai" | "anthropic" | "google";
+export type { Provider };
+
+function coerceStringToArray<T>(
+  value: unknown,
+  parser: (item: unknown) => T | undefined,
+): T[] | undefined {
+  if (Array.isArray(value)) {
+    return value.map(parser).filter((item): item is T => item !== undefined);
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map(parser)
+          .filter((item): item is T => item !== undefined);
+      }
+    } catch {
+      // Fall through to default.
+    }
+  }
+  return undefined;
+}
+
+const investigationAreaItemSchema = z.object({
+  area: z.string().default(""),
+  rationale: z.string().default(""),
+  files: z.array(z.string()).default([]),
+});
 
 const investigationSchema = z.object({
-  investigationAreas: z.array(
-    z.object({
-      area: z.string(),
-      rationale: z.string(),
-      files: z.array(z.string()),
-    }),
+  investigationAreas: z.preprocess(
+    (value) =>
+      coerceStringToArray(value, (item) => {
+        const result = investigationAreaItemSchema.safeParse(item);
+        return result.success ? result.data : undefined;
+      }) ?? [],
+    z.array(investigationAreaItemSchema),
   ),
 });
 
@@ -36,6 +66,13 @@ export interface LlmConfig {
   provider: Provider;
   apiKey: string;
   model: string;
+  baseUrl?: string;
+}
+
+export interface LlmConfigOverride {
+  provider?: Provider;
+  apiKey?: string;
+  model?: string;
   baseUrl?: string;
 }
 
@@ -68,10 +105,21 @@ Your first task is to identify the most important areas to investigate for secur
 - sensitive file access, environment variable reads
 - unexpected top-level side effects
 
-Return 3-10 investigation areas. For each area include:
-- area: short name
-- rationale: why it matters
-- files: specific file paths from the snapshot to examine in detail
+Return 3-10 investigation areas as a JSON array assigned to the key "investigationAreas". Each area must be an object with exactly these keys:
+- area: short name (string)
+- rationale: why it matters (string)
+- files: specific file paths from the snapshot to examine in detail (array of strings)
+
+Example shape:
+{
+  "investigationAreas": [
+    {
+      "area": "Lifecycle scripts",
+      "rationale": "postinstall scripts can run arbitrary code during install",
+      "files": ["package.json", "scripts/install.js"]
+    }
+  ]
+}
 
 If you are looking at a lite snapshot, prefer selecting files that were not already shown in full so the deep-dive pass can read fresh source code.`;
 
@@ -81,23 +129,38 @@ You previously identified key investigation areas. Now examine the FULL CONTENTS
 
 Be specific: cite file paths and line snippets as evidence. If a concern turns out to be benign after inspection, note that and lower the severity. If you find concrete issues, explain the exploit path or maintenance risk.
 
+Return ALL fields defined in the response schema. If a list has no items, return it as an empty array []. If the summary would be empty, write a brief one-sentence summary instead. Do not omit any field.
+
 For the score field, use this rubric as a guide: start from 100, subtract roughly 20-25 for each critical issue, 10-15 for each high issue, 5-8 for each medium issue, and 2-3 for each low issue; subtract 10 for an incompatible license, and prefer the 70-95 range for well-maintained packages with only minor concerns. The final score shown to the user will be computed from your findings, so be consistent and proportional.`;
 
 const METADATA_ONLY_PROMPT = `You are a software supply-chain auditor reviewing library metadata. The full source code was not available, so base your assessment on the metadata alone.
 
 Identify areas that would be worth investigating if the source code were available, and produce a structured audit report. Be explicit that findings are inferred from metadata, not confirmed by code inspection.
 
+Return ALL fields defined in the response schema. If a list has no items, return it as an empty array []. If the summary would be empty, write a brief one-sentence summary instead. Do not omit any field.
+
 For the score field, use this rubric as a guide: start from 100, subtract roughly 20-25 for each critical issue, 10-15 for each high issue, 5-8 for each medium issue, and 2-3 for each low issue; subtract 10 for an incompatible license. Since source code was not inspected, reserve the top scores (90-100) for packages with no metadata red flags; the final score shown to the user will be computed from your findings.`;
 
-export function getLlmConfig(): LlmConfig {
-  const provider = (
-    process.env.LLM_PROVIDER || "openai"
-  ).toLowerCase() as Provider;
-  const baseUrl = process.env.LLM_BASE_URL;
+export function getLlmConfig(override?: LlmConfigOverride): LlmConfig {
+  const rawProvider = (
+    override?.provider ??
+    process.env.LLM_PROVIDER ??
+    "openai"
+  ).toLowerCase();
+  if (!isProvider(rawProvider)) {
+    throw new AuditParseError(
+      `Unsupported LLM provider: ${rawProvider}. Use openai, anthropic, or google.`,
+    );
+  }
+  const provider = rawProvider;
+  const baseUrl = override?.baseUrl ?? process.env.LLM_BASE_URL;
 
   switch (provider) {
     case "openai": {
-      const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY;
+      const apiKey =
+        override?.apiKey ||
+        process.env.LLM_API_KEY ||
+        process.env.OPENAI_API_KEY;
       if (!apiKey && !baseUrl) {
         throw new AuditParseError(
           "LLM API key is not configured. Set LLM_API_KEY or OPENAI_API_KEY.",
@@ -108,12 +171,13 @@ export function getLlmConfig(): LlmConfig {
       return {
         provider,
         apiKey: apiKey ?? "unused",
-        model: process.env.LLM_MODEL || "gpt-4o-mini",
+        model: override?.model || process.env.LLM_MODEL || "gpt-4o-mini",
         baseUrl,
       };
     }
     case "anthropic": {
       const apiKey =
+        override?.apiKey ||
         process.env.LLM_API_KEY ||
         process.env.ANTHROPIC_API_KEY ||
         process.env.CLAUDE_API_KEY;
@@ -125,12 +189,16 @@ export function getLlmConfig(): LlmConfig {
       return {
         provider,
         apiKey,
-        model: process.env.LLM_MODEL || "claude-3-5-sonnet-20241022",
+        model:
+          override?.model ||
+          process.env.LLM_MODEL ||
+          "claude-3-5-sonnet-20241022",
         baseUrl,
       };
     }
     case "google": {
       const apiKey =
+        override?.apiKey ||
         process.env.LLM_API_KEY ||
         process.env.GEMINI_API_KEY ||
         process.env.GOOGLE_API_KEY;
@@ -142,7 +210,10 @@ export function getLlmConfig(): LlmConfig {
       return {
         provider,
         apiKey,
-        model: process.env.LLM_MODEL || "gemini-1.5-flash-latest",
+        model:
+          override?.model ||
+          process.env.LLM_MODEL ||
+          "gemini-1.5-flash-latest",
         baseUrl,
       };
     }
@@ -158,6 +229,14 @@ function parseRetryAfter(headers: Headers): number | undefined {
   if (!value) return undefined;
   const seconds = parseInt(value, 10);
   return Number.isNaN(seconds) ? undefined : seconds;
+}
+
+function joinApiPath(
+  baseUrl: string | undefined,
+  path: string,
+): string | undefined {
+  if (!baseUrl) return undefined;
+  return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
 function cleanJsonSchema(schema: object): object {
@@ -272,7 +351,9 @@ async function runAnthropicStructured<T>(
   toolName: string,
 ): Promise<{ parsed: T; interaction: LlmInteraction }> {
   const startedAt = new Date().toISOString();
-  const endpoint = config.baseUrl || "https://api.anthropic.com/v1/messages";
+  const endpoint =
+    joinApiPath(config.baseUrl, "/messages") ??
+    "https://api.anthropic.com/v1/messages";
   const inputSchema = cleanJsonSchema(schema.toJSONSchema());
 
   const requestPayload = {
@@ -283,7 +364,8 @@ async function runAnthropicStructured<T>(
     tools: [
       {
         name: toolName,
-        description: "Return a structured result.",
+        description:
+          "Return a structured result. Populate every field in the schema. Use empty arrays for lists with no items and write a brief one-sentence summary if there is nothing to report.",
         input_schema: inputSchema,
       },
     ],
@@ -364,7 +446,10 @@ async function runGoogleStructured<T>(
   };
 
   const endpoint =
-    config.baseUrl ||
+    joinApiPath(
+      config.baseUrl,
+      `/models/${config.model}:generateContent?key=${config.apiKey}`,
+    ) ??
     `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
 
   const response = await fetch(endpoint, {
@@ -587,8 +672,9 @@ export async function runLibraryAudit(
   context: LibraryContext,
   userPrompt?: string,
   onEvent?: AuditEventHandler,
+  config?: LlmConfig,
 ): Promise<AuditWithInteractions> {
-  const config = getLlmConfig();
+  const resolvedConfig = config ?? getLlmConfig();
 
   async function emitLlmEvent(interaction: LlmInteraction): Promise<void> {
     if (!onEvent) return;
@@ -626,14 +712,14 @@ export async function runLibraryAudit(
     if (context.codebase && context.codebase.files.length > 0) {
       await emitStep("investigate", "started");
       const { areas, interaction: investigationInteraction } =
-        await runInvestigationPhase(context, config, userPrompt);
+        await runInvestigationPhase(context, resolvedConfig, userPrompt);
       interactions.push(investigationInteraction);
       await emitLlmEvent(investigationInteraction);
       await emitStep("investigate", "completed");
 
       await emitStep("deep-dive", "started");
       const { result: auditResult, interaction: auditInteraction } =
-        await runAuditPhase(context, config, areas, userPrompt);
+        await runAuditPhase(context, resolvedConfig, areas, userPrompt);
       result = auditResult;
       interactions.push(auditInteraction);
       await emitLlmEvent(auditInteraction);
@@ -642,7 +728,7 @@ export async function runLibraryAudit(
       await emitStep("metadata-only", "started");
       const { result: auditResult, interaction } = await runMetadataOnlyAudit(
         context,
-        config,
+        resolvedConfig,
         userPrompt,
       );
       result = auditResult;
@@ -661,9 +747,19 @@ export async function runLibraryAudit(
           parseRetryAfter(error.headers || new Headers()),
         );
       }
-      throw new AuditParseError(
-        `OpenAI-compatible request failed: ${error.message || "unknown error"}`,
-      );
+      let message = `OpenAI-compatible request failed: ${error.message || "unknown error"}`;
+      const baseUrl = resolvedConfig.baseUrl ?? "";
+      if (baseUrl.includes("anthropic.com")) {
+        message +=
+          ". Anthropic's API is not OpenAI-compatible. Use the Anthropic provider type, or use an OpenAI-compatible proxy such as OpenRouter.";
+      } else if (baseUrl.includes("googleapis.com")) {
+        message +=
+          ". Google's Gemini API is not OpenAI-compatible. Use the Google provider type.";
+      } else if (error.status === 401) {
+        message +=
+          " Check that the API key is correct for the configured base URL.";
+      }
+      throw new AuditParseError(message);
     }
     if (
       error instanceof UpstreamRateLimitError ||

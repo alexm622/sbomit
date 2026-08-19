@@ -20,6 +20,8 @@ import {
   Ban,
   Tag,
   ShieldAlert,
+  Bot,
+  Cpu,
 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
@@ -45,8 +47,11 @@ import {
   Countdown,
   displayUrlLabel,
   useAuditJobs,
+  type AuditLlmConfig,
 } from "@/app/components/audit-jobs";
 import type { AuditStep } from "@/app/lib/run-audit";
+import { useProviderConfigs } from "@/app/lib/use-provider-configs";
+import { providerLabels } from "@/app/lib/providers";
 
 interface Risk {
   severity: "critical" | "high" | "medium" | "low";
@@ -204,9 +209,12 @@ const pipelineSteps: {
 
 export default function Home() {
   const { jobs, startAudit, cancelAudit } = useAuditJobs();
+  const { configs, selectedConfig, selectedId, setSelectedId } =
+    useProviderConfigs();
   const [libraryUrl, setLibraryUrl] = React.useState("");
   const [version, setVersion] = React.useState("");
   const [prompt, setPrompt] = React.useState("");
+  const [model, setModel] = React.useState("");
   const [activeJobId, setActiveJobId] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<AuditResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -232,6 +240,11 @@ export default function Home() {
     ? jobs.find((job) => job.id === activeJobId)
     : undefined;
   const loading = activeJob?.status === "running";
+
+  const effectiveModel =
+    model && selectedConfig?.models.includes(model)
+      ? model
+      : (selectedConfig?.models[0] ?? "");
 
   React.useEffect(() => {
     const trimmed = libraryUrl.trim();
@@ -351,10 +364,18 @@ export default function Home() {
       const normalizedUrl = normalizeUrl(libraryUrl);
       const normalizedVersion = version.trim() || undefined;
 
+      const llmConfig: AuditLlmConfig | undefined = selectedConfig
+        ? {
+            providerId: selectedConfig.id,
+            model: effectiveModel,
+          }
+        : undefined;
+
       const { jobId, done } = startAudit({
         libraryUrl: normalizedUrl,
         version: normalizedVersion,
         prompt: prompt.trim() || undefined,
+        llmConfig,
       });
       setActiveJobId(jobId);
 
@@ -370,7 +391,7 @@ export default function Home() {
       }
       setActiveJobId(null);
     },
-    [libraryUrl, version, prompt, startAudit],
+    [libraryUrl, version, prompt, effectiveModel, selectedConfig, startAudit],
   );
 
   const handleCancelAudit = React.useCallback(() => {
@@ -523,6 +544,65 @@ export default function Home() {
                   </div>
 
                   <div className="relative">
+                    <Bot className="pointer-events-none absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+                    <select
+                      value={selectedId ?? ""}
+                      onChange={(e) => setSelectedId(e.target.value || null)}
+                      disabled={configs.length === 0}
+                      aria-label="AI provider"
+                      className="h-12 w-full appearance-none rounded-lg border-0 bg-muted/50 pl-11 pr-10 text-base text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {configs.length === 0 ? (
+                        <option value="">No providers configured</option>
+                      ) : (
+                        configs.map((config) => (
+                          <option key={config.id} value={config.id}>
+                            {config.name} ({providerLabels[config.provider]})
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <ChevronRight className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-muted-foreground" />
+                  </div>
+
+                  <div className="relative">
+                    <Cpu className="pointer-events-none absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+                    <select
+                      value={effectiveModel}
+                      onChange={(e) => setModel(e.target.value)}
+                      disabled={!selectedConfig || selectedConfig.models.length === 0}
+                      aria-label="Model"
+                      className="h-12 w-full appearance-none rounded-lg border-0 bg-muted/50 pl-11 pr-10 text-base text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {!selectedConfig ? (
+                        <option value="">Select a provider first</option>
+                      ) : selectedConfig.models.length === 0 ? (
+                        <option value="">No models configured</option>
+                      ) : (
+                        selectedConfig.models.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <ChevronRight className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-muted-foreground" />
+                  </div>
+
+                  {configs.length === 0 && (
+                    <div className="rounded-lg border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
+                      Add an LLM provider in{" "}
+                      <a
+                        href="/settings"
+                        className="font-medium text-primary hover:underline"
+                      >
+                        Settings
+                      </a>{" "}
+                      to run audits.
+                    </div>
+                  )}
+
+                  <div className="relative">
                     <MessageSquare className="absolute left-3.5 top-3 h-5 w-5 text-muted-foreground" />
                     <textarea
                       value={prompt}
@@ -535,7 +615,9 @@ export default function Home() {
 
                   <Button
                     type="submit"
-                    disabled={loading || !libraryUrl.trim()}
+                    disabled={
+                      loading || !libraryUrl.trim() || !selectedConfig || !effectiveModel
+                    }
                     className="h-12 px-8 text-base"
                   >
                     {loading ? (
@@ -841,7 +923,18 @@ export default function Home() {
                   Audit report for {result.name}
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  Generated by OpenAI from public library metadata.
+                  Generated by{" "}
+                  {activeJob?.interactions?.[0]?.provider
+                    ? providerLabels[
+                        activeJob.interactions[0].provider as "openai" | "anthropic" | "google"
+                      ]
+                    : selectedConfig
+                      ? providerLabels[selectedConfig.provider]
+                      : "AI"}{" "}
+                  {activeJob?.interactions?.[0]?.model || effectiveModel
+                    ? `(${activeJob?.interactions?.[0]?.model || effectiveModel})`
+                    : ""}{" "}
+                  from public library metadata.
                 </p>
               </div>
             </div>

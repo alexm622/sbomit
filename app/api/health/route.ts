@@ -1,4 +1,5 @@
 import { getDb } from "@/app/lib/db";
+import { getLlmConfig } from "@/app/lib/llm";
 
 export async function GET() {
   let dbOk = false;
@@ -10,12 +11,23 @@ export async function GET() {
     dbOk = false;
   }
 
+  let llmOk = false;
+  let llmProvider = "none";
+  try {
+    const config = getLlmConfig();
+    llmOk = true;
+    llmProvider = config.provider;
+  } catch {
+    llmOk = false;
+  }
+
   return Response.json(
     {
       status: dbOk ? "ok" : "degraded",
       bindings: {
         db: dbOk,
-        openai: Boolean(process.env.OPENAI_API_KEY),
+        llm: llmOk,
+        llmProvider,
       },
     },
     { status: dbOk ? 200 : 503 },

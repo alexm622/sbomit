@@ -59,10 +59,10 @@ export const auditResultSchema = z.object({
   name: z.string(),
   version: z.string(),
   score: z.number().min(0).max(100),
-  summary: z.string(),
-  risks: z.array(riskSchema),
-  investigationAreas: z.array(investigationAreaSchema),
-  deepDiveFindings: z.array(deepDiveFindingSchema),
+  summary: z.string().default(""),
+  risks: z.array(riskSchema).default([]),
+  investigationAreas: z.array(investigationAreaSchema).default([]),
+  deepDiveFindings: z.array(deepDiveFindingSchema).default([]),
   dependencies: z.array(
     z.object({
       name: z.string(),
@@ -70,16 +70,18 @@ export const auditResultSchema = z.object({
       license: z.string(),
       transitive: z.boolean(),
     }),
-  ),
-  license: z.object({
-    type: z.string(),
-    compatible: z.boolean(),
-    note: z.string(),
-  }),
-  maintainers: z.array(z.string()),
-  lastPublished: z.string(),
-  weeklyDownloads: z.string(),
-  cves: z.array(cveSchema),
+  ).default([]),
+  license: z
+    .object({
+      type: z.string().default(""),
+      compatible: z.boolean().default(true),
+      note: z.string().default(""),
+    })
+    .default({ type: "", compatible: true, note: "" }),
+  maintainers: z.array(z.string()).default([]),
+  lastPublished: z.string().default(""),
+  weeklyDownloads: z.string().default(""),
+  cves: z.array(cveSchema).default([]),
 });
 
 export type AuditResult = z.infer<typeof auditResultSchema>;
@@ -246,10 +248,12 @@ export function normalizePrompt(prompt?: string): string | undefined {
 export async function computeCacheKey(
   context: LibraryContext,
   prompt?: string,
+  provider?: string,
+  model?: string,
 ): Promise<string> {
   const normalizedPrompt = normalizePrompt(prompt) || "";
   const budget = sourceTokenBudget();
-  const input = `${context.source}:${context.name}:${context.version}:${budget}:${normalizedPrompt}`;
+  const input = `${context.source}:${context.name}:${context.version}:${budget}:${provider ?? "env"}:${model ?? "env"}:${normalizedPrompt}`;
   const encoder = new TextEncoder();
   const digest = await crypto.subtle.digest(
     "SHA-256",

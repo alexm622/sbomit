@@ -412,4 +412,26 @@ describe("getLlmConfig", () => {
     process.env.LLM_API_KEY = "key";
     expect(() => getLlmConfig()).toThrow(AuditParseError);
   });
+
+  it("uses override values when provided", () => {
+    process.env.OPENAI_API_KEY = "sk-env";
+    const config = getLlmConfig({
+      provider: "anthropic",
+      apiKey: "anthropic-override",
+      model: "claude-override",
+      baseUrl: "https://anthropic.example.com",
+    });
+    expect(config.provider).toBe("anthropic");
+    expect(config.apiKey).toBe("anthropic-override");
+    expect(config.model).toBe("claude-override");
+    expect(config.baseUrl).toBe("https://anthropic.example.com");
+  });
+
+  it("falls back to env when override omits fields", () => {
+    process.env.OPENAI_API_KEY = "sk-env";
+    const config = getLlmConfig({ model: "gpt-4o" });
+    expect(config.provider).toBe("openai");
+    expect(config.apiKey).toBe("sk-env");
+    expect(config.model).toBe("gpt-4o");
+  });
 });

@@ -1,5 +1,6 @@
 import { DbUnavailableError } from "./errors";
 import type { AuditResult } from "./audit";
+import type { Provider } from "./providers";
 
 function generatePublicId(): string {
   const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -156,6 +157,138 @@ export async function getDb(env?: Record<string, unknown>): Promise<D1Database> 
   }
 
   throw new DbUnavailableError();
+}
+
+function generateProviderId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return generatePublicId();
+}
+
+export interface StoredProvider {
+  id: string;
+  name: string;
+  provider: Provider;
+  api_key: string;
+  base_url: string | null;
+  models: string;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderInput {
+  name: string;
+  provider: Provider;
+  apiKey?: string;
+  baseUrl?: string;
+  models: string[];
+  isDefault?: boolean;
+}
+
+export async function listProviders(db: D1Database): Promise<StoredProvider[]> {
+  const result = await db
+    .prepare("SELECT * FROM providers ORDER BY created_at ASC")
+    .all<StoredProvider>();
+  return result.results || [];
+}
+
+export async function getProviderById(
+  db: D1Database,
+  id: string,
+): Promise<StoredProvider | null> {
+  return db
+    .prepare("SELECT * FROM providers WHERE id = ? LIMIT 1")
+    .bind(id)
+    .first<StoredProvider>();
+}
+
+export async function getDefaultProvider(
+  db: D1Database,
+): Promise<StoredProvider | null> {
+  return db
+    .prepare("SELECT * FROM providers WHERE is_default = 1 LIMIT 1")
+    .first<StoredProvider>();
+}
+
+async function clearDefaultFlag(db: D1Database): Promise<void> {
+  await db.prepare("UPDATE providers SET is_default = 0").run();
+}
+
+export async function createProvider(
+  db: D1Database,
+  input: ProviderInput,
+): Promise<string> {
+  const id = generateProviderId();
+  if (input.isDefault) {
+    await clearDefaultFlag(db);
+  }
+  await db
+    .prepare(
+      `INSERT INTO providers (id, name, provider, api_key, base_url, models, is_default)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      input.name,
+      input.provider,
+      input.apiKey ?? "",
+      input.baseUrl ?? null,
+      JSON.stringify(input.models),
+      input.isDefault ? 1 : 0,
+    )
+    .run();
+  return id;
+}
+
+export async function updateProvider(
+  db: D1Database,
+  id: string,
+  input: Partial<ProviderInput>,
+): Promise<boolean> {
+  const existing = await getProviderById(db, id);
+  if (!existing) {
+    return false;
+  }
+
+  if (input.isDefault) {
+    await clearDefaultFlag(db);
+  }
+
+  const name = input.name ?? existing.name;
+  const provider = input.provider ?? existing.provider;
+  const apiKey =
+    input.apiKey !== undefined && input.apiKey !== ""
+      ? input.apiKey
+      : existing.api_key;
+  const baseUrl =
+    input.baseUrl !== undefined ? input.baseUrl : existing.base_url;
+  const models =
+    input.models !== undefined ? JSON.stringify(input.models) : existing.models;
+  const isDefault =
+    input.isDefault !== undefined ? (input.isDefault ? 1 : 0) : existing.is_default;
+
+  await db
+    .prepare(
+      `UPDATE providers
+       SET name = ?, provider = ?, api_key = ?, base_url = ?, models = ?, is_default = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    )
+    .bind(name, provider, apiKey, baseUrl ?? null, models, isDefault, id)
+    .run();
+  return true;
+}
+
+export async function deleteProvider(
+  db: D1Database,
+  id: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare("DELETE FROM providers WHERE id = ?")
+    .bind(id)
+    .run();
+  return result.meta?.changes === 1;
 }
 
 export async function saveDependencyTree(

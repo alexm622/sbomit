@@ -5,11 +5,22 @@ import {
   type AuditResult,
   type LibraryContext,
 } from "./audit";
-import { getDb, saveAuditReport, type StoredAuditReport } from "./db";
-import { getLlmConfig, runLibraryAudit, type LlmInteraction } from "./llm";
+import {
+  getDb,
+  getProviderById,
+  saveAuditReport,
+  type StoredAuditReport,
+} from "./db";
+import {
+  getLlmConfig,
+  runLibraryAudit,
+  type LlmConfigOverride,
+  type LlmInteraction,
+} from "./llm";
 import { MissingInputError } from "./errors";
 import { enrichLibrary } from "./signals";
 import { getCachedAuditReport } from "./cache";
+import { isProvider, type Provider } from "./providers";
 
 export type AuditStep =
   | "resolve"
@@ -46,6 +57,11 @@ export interface RunAuditInput {
   libraryUrl: string;
   version?: string;
   prompt?: string;
+  providerId?: string;
+  provider?: Provider;
+  model?: string;
+  apiKey?: string;
+  baseUrl?: string;
 }
 
 export interface RunAuditResult {
@@ -59,21 +75,40 @@ export interface RunAuditResult {
   };
 }
 
-export function parseRequestBody(
-  body: unknown,
-): { libraryUrl: string; version?: string; prompt?: string } {
+export function parseRequestBody(body: unknown): RunAuditInput {
   if (!body || typeof body !== "object") {
     throw new MissingInputError();
   }
-  const { libraryUrl, version, prompt } = body as {
+  const {
+    libraryUrl,
+    version,
+    prompt,
+    providerId,
+    provider,
+    model,
+    apiKey,
+    baseUrl,
+  } = body as {
     libraryUrl?: unknown;
     version?: unknown;
     prompt?: unknown;
+    providerId?: unknown;
+    provider?: unknown;
+    model?: unknown;
+    apiKey?: unknown;
+    baseUrl?: unknown;
   };
   if (typeof libraryUrl !== "string" || libraryUrl.trim().length === 0) {
     throw new MissingInputError();
   }
-  return {
+
+  const trimmedProvider: Provider | undefined =
+    typeof provider === "string" ? (provider.trim() as Provider) : undefined;
+  if (trimmedProvider && !isProvider(trimmedProvider)) {
+    throw new MissingInputError(`Unsupported LLM provider: ${trimmedProvider}`);
+  }
+
+  const result: RunAuditInput = {
     libraryUrl: libraryUrl.trim(),
     version:
       typeof version === "string" && version.trim().length > 0
@@ -81,6 +116,23 @@ export function parseRequestBody(
         : undefined,
     prompt: typeof prompt === "string" ? prompt : undefined,
   };
+
+  if (typeof providerId === "string" && providerId.trim()) {
+    result.providerId = providerId.trim();
+  }
+
+  if (trimmedProvider) result.provider = trimmedProvider;
+  if (typeof model === "string" && model.trim().length > 0) {
+    result.model = model.trim();
+  }
+  if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+    result.apiKey = apiKey.trim();
+  }
+  if (typeof baseUrl === "string" && baseUrl.trim().length > 0) {
+    result.baseUrl = baseUrl.trim();
+  }
+
+  return result;
 }
 
 function storedReportToResult(report: StoredAuditReport): AuditResult {
@@ -162,8 +214,42 @@ export async function runAudit(
   onEvent?: AuditEventHandler,
   db?: D1Database,
 ): Promise<RunAuditResult> {
-  const { libraryUrl, version, prompt } = input;
+  const {
+    libraryUrl,
+    version,
+    prompt,
+    providerId,
+    provider,
+    model,
+    apiKey,
+    baseUrl,
+  } = input;
   const startedAt = Date.now();
+
+  const dbInstance = db ?? (await getDb());
+
+  let llmOverride: LlmConfigOverride | undefined;
+  if (providerId) {
+    const providerRow = await getProviderById(dbInstance, providerId);
+    if (!providerRow) {
+      throw new MissingInputError(`Provider not found: ${providerId}`);
+    }
+    const dbModels = JSON.parse(providerRow.models) as string[];
+    llmOverride = {
+      provider: providerRow.provider,
+      apiKey: providerRow.api_key,
+      model: model ?? dbModels[0] ?? undefined,
+      baseUrl: providerRow.base_url ?? undefined,
+    };
+  } else if (provider || model || apiKey || baseUrl) {
+    llmOverride = {
+      ...(provider ? { provider } : {}),
+      ...(model ? { model } : {}),
+      ...(apiKey ? { apiKey } : {}),
+      ...(baseUrl ? { baseUrl } : {}),
+    };
+  }
+  const llmConfig = getLlmConfig(llmOverride);
 
   await emitStep(onEvent, "resolve", "started");
   const context = await resolveLibrary(libraryUrl, version);
@@ -196,8 +282,12 @@ export async function runAudit(
         : "metadata only",
   );
 
-  const dbInstance = db ?? (await getDb());
-  const cacheKey = await computeCacheKey(fullContext, prompt);
+  const cacheKey = await computeCacheKey(
+    fullContext,
+    prompt,
+    llmConfig.provider,
+    llmConfig.model,
+  );
 
   const cached = await getCachedAuditReport(
     dbInstance,
@@ -229,12 +319,13 @@ export async function runAudit(
         await emitEta(onEvent, startedAt, event.step);
       }
     },
+    llmConfig,
   );
 
   await emitStep(onEvent, "validate", "started");
   const resultJson = JSON.stringify(result);
   const interactionJson = JSON.stringify(interactions);
-  const { model } = getLlmConfig();
+  const llmModel = llmConfig.model;
   await emitStep(onEvent, "validate", "completed");
 
   await emitStep(onEvent, "persist", "started");
@@ -244,7 +335,7 @@ export async function runAudit(
     source: fullContext.source,
     url: fullContext.url,
     prompt,
-    model,
+    model: llmModel,
     score: result.score,
     resultJson,
     cacheKey,

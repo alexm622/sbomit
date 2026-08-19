@@ -228,4 +228,37 @@ describe("POST /api/audit", () => {
     const data = (await response.json()) as { error: string; code: string };
     expect(data.code).toBe("UNSUPPORTED_SOURCE");
   });
+
+  it("passes provider and model overrides to runAudit", async () => {
+    globalThis.fetch = mockFetch(
+      () => new Response(JSON.stringify({}), { status: 200 }),
+    );
+
+    const request = new Request("http://localhost/api/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        libraryUrl: "https://www.npmjs.com/package/lodash",
+        provider: "anthropic",
+        model: "claude-3-5-sonnet-20241022",
+        apiKey: "anthropic-test",
+        baseUrl: "https://anthropic.example.com",
+      }),
+    });
+
+    await POST(request);
+    expect(mockRunAudit).toHaveBeenCalledWith(
+      {
+        libraryUrl: "https://www.npmjs.com/package/lodash",
+        version: undefined,
+        prompt: undefined,
+        provider: "anthropic",
+        model: "claude-3-5-sonnet-20241022",
+        apiKey: "anthropic-test",
+        baseUrl: "https://anthropic.example.com",
+      },
+      undefined,
+      expect.anything(),
+    );
+  });
 });

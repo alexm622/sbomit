@@ -316,6 +316,20 @@ describe("computeCacheKey", () => {
     const key2 = await computeCacheKey(context, "b");
     expect(key1).not.toBe(key2);
   });
+
+  it("produces different keys for different models", async () => {
+    const context: LibraryContext = {
+      source: "npm",
+      url: "https://www.npmjs.com/package/lodash",
+      name: "lodash",
+      version: "4.17.21",
+      metadata: npmMetadata,
+      cves: [],
+    };
+    const key1 = await computeCacheKey(context, "focus", "openai", "gpt-4o-mini");
+    const key2 = await computeCacheKey(context, "focus", "openai", "gpt-4o");
+    expect(key1).not.toBe(key2);
+  });
 });
 
 describe("normalizePrompt", () => {

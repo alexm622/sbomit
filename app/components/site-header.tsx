@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Loader2, Shield } from "lucide-react";
+import { Loader2, Settings, Shield } from "lucide-react";
 import { useAuditJobs } from "./audit-jobs";
 
 export function SiteHeader() {
@@ -36,6 +36,13 @@ export function SiteHeader() {
                 {runningCount} running
               </span>
             )}
+          </Link>
+          <Link
+            href="/settings"
+            className="flex items-center gap-1.5 hover:text-foreground"
+          >
+            <Settings className="h-4 w-4" />
+            Settings
           </Link>
           <a href="#" className="hidden hover:text-foreground sm:inline">
             API

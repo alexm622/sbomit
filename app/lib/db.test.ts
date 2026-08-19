@@ -14,6 +14,9 @@ import {
   deleteAuditReport,
   getDependenciesByAuditId,
   getAuditReportFindings,
+  createProvider,
+  updateProvider,
+  getProviderById,
 } from "./db";
 import { DbUnavailableError } from "./errors";
 
@@ -119,6 +122,19 @@ async function setupSchema(db: D1Database) {
       `license TEXT NOT NULL,` +
       `transitive INTEGER NOT NULL DEFAULT 0,` +
       `FOREIGN KEY (report_id) REFERENCES audit_reports(id) ON DELETE CASCADE` +
+      `);`,
+  );
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS providers (` +
+      `id TEXT PRIMARY KEY,` +
+      `name TEXT NOT NULL,` +
+      `provider TEXT NOT NULL,` +
+      `api_key TEXT NOT NULL,` +
+      `base_url TEXT,` +
+      `models TEXT NOT NULL,` +
+      `is_default INTEGER NOT NULL DEFAULT 0,` +
+      `created_at DATETIME DEFAULT CURRENT_TIMESTAMP,` +
+      `updated_at DATETIME DEFAULT CURRENT_TIMESTAMP` +
       `);`,
   );
 }
@@ -411,5 +427,33 @@ describe("db helpers", () => {
     expect(await getAuditReportById(db, reportId)).toBeNull();
     expect(await getAuditById(db, auditId)).not.toBeNull();
     expect(await getAuditReportById(db, secondReportId)).not.toBeNull();
+  });
+
+  it("createProvider and updateProvider persist the api key", async () => {
+    const id = await createProvider(db, {
+      name: "OpenAI",
+      provider: "openai",
+      apiKey: "",
+      models: ["gpt-4o-mini"],
+      isDefault: true,
+    });
+
+    let stored = await getProviderById(db, id);
+    expect(stored).not.toBeNull();
+    expect(stored?.api_key).toBe("");
+
+    await updateProvider(db, id, {
+      name: "OpenAI Updated",
+      apiKey: "sk-secret-key",
+    });
+
+    stored = await getProviderById(db, id);
+    expect(stored?.name).toBe("OpenAI Updated");
+    expect(stored?.api_key).toBe("sk-secret-key");
+
+    // Empty apiKey should keep the existing key.
+    await updateProvider(db, id, { apiKey: "" });
+    stored = await getProviderById(db, id);
+    expect(stored?.api_key).toBe("sk-secret-key");
   });
 });

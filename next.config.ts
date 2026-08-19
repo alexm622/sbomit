@@ -10,3 +10,7 @@ export default nextConfig;
 // when running `next dev` locally.
 import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 initOpenNextCloudflareForDev();
+// next.config.js
+module.exports = {
+  allowedDevOrigins: ['10.0.0.219'],
+}
