@@ -45,6 +45,7 @@ interface AuditHistoryItem {
   provider: string | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  tokens_total: number | null;
   started_at: string | null;
   finished_at: string | null;
   codebase_inspected: number;
@@ -578,8 +579,10 @@ export default function AuditsPage() {
                   );
                   const tokenHint =
                     item.tokens_input != null || item.tokens_output != null
-                      ? `${item.tokens_input ?? "-"} in / ${item.tokens_output ?? "-"} out`
-                      : null;
+                      ? `${item.tokens_input ?? "-"} in / ${item.tokens_output ?? "-"} out${item.tokens_total != null ? ` · ${item.tokens_total.toLocaleString()} total` : ""}`
+                      : item.tokens_total != null
+                        ? `${item.tokens_total.toLocaleString()} tokens`
+                        : null;
 
                   return (
                     <Card key={item.id}>

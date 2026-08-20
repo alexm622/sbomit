@@ -16,7 +16,7 @@
       "database_name": "sbomit-deps",
       // Replace with your real D1 database ID from `wrangler d1 list`.
       // For local dev with `wrangler dev` this can remain as a placeholder.
-      "database_id": "<DATABASE_ID>",
+      "database_id": "ef52cc06-6339-48c4-b606-0d1e2f4b50c6",
       "migrations_dir": "./migrations"
     }
   ]

@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     );
   }
 
-  let input: { libraryUrl: string; prompt?: string };
+  let input: ReturnType<typeof parseRequestBody>;
   try {
     input = parseRequestBody(body);
   } catch (error) {

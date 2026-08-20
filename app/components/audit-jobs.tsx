@@ -45,12 +45,18 @@ export interface StartAuditHandle {
   done: Promise<AuditOutcome>;
 }
 
+export interface AuditLlmConfig {
+  providerId: string;
+  model: string;
+}
+
 interface AuditJobsContextValue {
   jobs: AuditJob[];
   startAudit(input: {
     libraryUrl: string;
     version?: string;
     prompt?: string;
+    llmConfig?: AuditLlmConfig;
   }): StartAuditHandle;
   cancelAudit(jobId: string): void;
   dismissJob(jobId: string): void;
@@ -106,6 +112,7 @@ export function AuditJobsProvider({
       libraryUrl: string;
       version?: string;
       prompt?: string;
+      llmConfig?: AuditLlmConfig;
     }): StartAuditHandle => {
       const jobId = createJobId();
       const controller = new AbortController();
@@ -125,14 +132,20 @@ export function AuditJobsProvider({
 
       const done = (async (): Promise<AuditOutcome> => {
         try {
+          const body: Record<string, unknown> = {
+            libraryUrl: input.libraryUrl,
+          };
+          if (input.version) body.version = input.version;
+          if (input.prompt) body.prompt = input.prompt;
+          if (input.llmConfig) {
+            body.providerId = input.llmConfig.providerId;
+            body.model = input.llmConfig.model;
+          }
+
           const res = await fetch("/api/audit/stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              libraryUrl: input.libraryUrl,
-              version: input.version,
-              prompt: input.prompt,
-            }),
+            body: JSON.stringify(body),
             signal: controller.signal,
           });
 

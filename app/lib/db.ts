@@ -1,5 +1,6 @@
 import { DbUnavailableError } from "./errors";
 import type { AuditResult } from "./audit";
+import type { Provider } from "./providers";
 
 function generatePublicId(): string {
   const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -36,6 +37,7 @@ export interface StoredAuditReport {
   cache_key: string | null;
   interaction_json: string | null;
   codebase_inspected: number;
+  tokens_total: number | null;
   created_at: string;
 }
 
@@ -55,6 +57,7 @@ export interface StoredAuditReportSummary {
   provider: string | null;
   tokens_input: number | null;
   tokens_output: number | null;
+  tokens_total: number | null;
   started_at: string | null;
   finished_at: string | null;
   codebase_inspected: number;
@@ -156,6 +159,138 @@ export async function getDb(env?: Record<string, unknown>): Promise<D1Database> 
   throw new DbUnavailableError();
 }
 
+function generateProviderId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return generatePublicId();
+}
+
+export interface StoredProvider {
+  id: string;
+  name: string;
+  provider: Provider;
+  api_key: string;
+  base_url: string | null;
+  models: string;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderInput {
+  name: string;
+  provider: Provider;
+  apiKey?: string;
+  baseUrl?: string;
+  models: string[];
+  isDefault?: boolean;
+}
+
+export async function listProviders(db: D1Database): Promise<StoredProvider[]> {
+  const result = await db
+    .prepare("SELECT * FROM providers ORDER BY created_at ASC")
+    .all<StoredProvider>();
+  return result.results || [];
+}
+
+export async function getProviderById(
+  db: D1Database,
+  id: string,
+): Promise<StoredProvider | null> {
+  return db
+    .prepare("SELECT * FROM providers WHERE id = ? LIMIT 1")
+    .bind(id)
+    .first<StoredProvider>();
+}
+
+export async function getDefaultProvider(
+  db: D1Database,
+): Promise<StoredProvider | null> {
+  return db
+    .prepare("SELECT * FROM providers WHERE is_default = 1 LIMIT 1")
+    .first<StoredProvider>();
+}
+
+async function clearDefaultFlag(db: D1Database): Promise<void> {
+  await db.prepare("UPDATE providers SET is_default = 0").run();
+}
+
+export async function createProvider(
+  db: D1Database,
+  input: ProviderInput,
+): Promise<string> {
+  const id = generateProviderId();
+  if (input.isDefault) {
+    await clearDefaultFlag(db);
+  }
+  await db
+    .prepare(
+      `INSERT INTO providers (id, name, provider, api_key, base_url, models, is_default)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      input.name,
+      input.provider,
+      input.apiKey ?? "",
+      input.baseUrl ?? null,
+      JSON.stringify(input.models),
+      input.isDefault ? 1 : 0,
+    )
+    .run();
+  return id;
+}
+
+export async function updateProvider(
+  db: D1Database,
+  id: string,
+  input: Partial<ProviderInput>,
+): Promise<boolean> {
+  const existing = await getProviderById(db, id);
+  if (!existing) {
+    return false;
+  }
+
+  if (input.isDefault) {
+    await clearDefaultFlag(db);
+  }
+
+  const name = input.name ?? existing.name;
+  const provider = input.provider ?? existing.provider;
+  const apiKey =
+    input.apiKey !== undefined && input.apiKey !== ""
+      ? input.apiKey
+      : existing.api_key;
+  const baseUrl =
+    input.baseUrl !== undefined ? input.baseUrl : existing.base_url;
+  const models =
+    input.models !== undefined ? JSON.stringify(input.models) : existing.models;
+  const isDefault =
+    input.isDefault !== undefined ? (input.isDefault ? 1 : 0) : existing.is_default;
+
+  await db
+    .prepare(
+      `UPDATE providers
+       SET name = ?, provider = ?, api_key = ?, base_url = ?, models = ?, is_default = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    )
+    .bind(name, provider, apiKey, baseUrl ?? null, models, isDefault, id)
+    .run();
+  return true;
+}
+
+export async function deleteProvider(
+  db: D1Database,
+  id: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare("DELETE FROM providers WHERE id = ?")
+    .bind(id)
+    .run();
+  return result.meta?.changes === 1;
+}
+
 export async function saveDependencyTree(
   db: D1Database,
   audit: {
@@ -192,11 +327,41 @@ export async function saveDependencyTree(
   return auditId;
 }
 
+interface InteractionLike {
+  tokensInput?: number | null;
+  tokensOutput?: number | null;
+}
+
 function parseAuditResult(resultJson: string): AuditResult | undefined {
   try {
     return JSON.parse(resultJson) as AuditResult;
   } catch {
     return undefined;
+  }
+}
+
+function computeTokensTotal(interactionJson: string | undefined): number | null {
+  if (!interactionJson) return null;
+  try {
+    const parsed = JSON.parse(interactionJson) as
+      | InteractionLike
+      | InteractionLike[];
+    const interactions = Array.isArray(parsed) ? parsed : [parsed];
+    let total = 0;
+    let hasTokens = false;
+    for (const interaction of interactions) {
+      if (interaction.tokensInput != null) {
+        total += interaction.tokensInput;
+        hasTokens = true;
+      }
+      if (interaction.tokensOutput != null) {
+        total += interaction.tokensOutput;
+        hasTokens = true;
+      }
+    }
+    return hasTokens ? total : null;
+  } catch {
+    return null;
   }
 }
 
@@ -229,10 +394,11 @@ export async function saveAuditReport(
   }
 
   const publicId = generatePublicId();
+  const tokensTotal = computeTokensTotal(input.interactionJson);
 
   const insertReport = db
     .prepare(
-      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json, cache_key, interaction_json, codebase_inspected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json, cache_key, interaction_json, codebase_inspected, tokens_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       auditId,
@@ -244,6 +410,7 @@ export async function saveAuditReport(
       input.cacheKey ?? null,
       input.interactionJson ?? null,
       input.codebaseInspected ? 1 : 0,
+      tokensTotal,
     );
 
   const reportResult = await insertReport.run<{ id: number }>();
@@ -427,6 +594,7 @@ export async function listAuditReports(
               JSON_EXTRACT(r.interaction_json, '$.provider') AS provider,
               JSON_EXTRACT(r.interaction_json, '$.tokensInput') AS tokens_input,
               JSON_EXTRACT(r.interaction_json, '$.tokensOutput') AS tokens_output,
+              r.tokens_total,
               JSON_EXTRACT(r.interaction_json, '$.startedAt') AS started_at,
               JSON_EXTRACT(r.interaction_json, '$.finishedAt') AS finished_at,
               r.codebase_inspected

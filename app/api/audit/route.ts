@@ -22,7 +22,7 @@ export async function POST(request: Request) {
       throw new MissingInputError("Invalid JSON body.");
     }
 
-    const { libraryUrl, version, prompt } = parseRequestBody(body);
+    const input = parseRequestBody(body);
 
     const db = await getDb();
     const rateLimit = await checkRateLimit(
@@ -35,11 +35,7 @@ export async function POST(request: Request) {
       throw new RateLimitExceededError(rateLimit.limit, rateLimit.resetAt);
     }
 
-    const { result, meta } = await runAudit(
-      { libraryUrl, version, prompt },
-      undefined,
-      db,
-    );
+    const { result, meta } = await runAudit(input, undefined, db);
 
     return Response.json(
       {
