@@ -7,6 +7,7 @@ import {
   Package,
   Scale,
   ChevronRight,
+  ChevronDown,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -22,6 +23,7 @@ import {
   ShieldAlert,
   Bot,
   Cpu,
+  Settings,
 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
@@ -47,11 +49,15 @@ import {
   Countdown,
   displayUrlLabel,
   useAuditJobs,
-  type AuditLlmConfig,
 } from "@/app/components/audit-jobs";
-import type { AuditStep } from "@/app/lib/run-audit";
+import { CompetitionReadoutView } from "@/app/components/competition-readout";
+import type {
+  AuditStep,
+  CompetitionModelStep,
+  RunAuditInput,
+} from "@/app/lib/run-audit";
 import { useProviderConfigs } from "@/app/lib/use-provider-configs";
-import { providerLabels } from "@/app/lib/providers";
+import { providerLabels, type ProviderConfig } from "@/app/lib/providers";
 
 interface Risk {
   severity: "critical" | "high" | "medium" | "low";
@@ -98,6 +104,7 @@ interface AuditResult {
   lastPublished: string;
   weeklyDownloads: string;
   cves: Cve[];
+  competitionReadout?: import("@/app/lib/audit").CompetitionReadout | null;
 }
 
 interface Cve {
@@ -194,6 +201,12 @@ const pipelineSteps: {
     detail: "Second AI pass: analyze the selected files and produce a structured report.",
   },
   {
+    step: "judge",
+    icon: Scale,
+    label: "Judge merging findings",
+    detail: "Third AI pass: compare both audits, remove duplicates, and combine unique findings.",
+  },
+  {
     step: "validate",
     icon: CheckCircle2,
     label: "Validating the result",
@@ -206,6 +219,203 @@ const pipelineSteps: {
     detail: "Persisting the audit to D1 so it appears in your audit history.",
   },
 ];
+
+const competitionModelSteps: {
+  step: CompetitionModelStep;
+  label: string;
+  detail: string;
+}[] = [
+  {
+    step: "investigate",
+    label: "Investigate",
+    detail: "Pinpoint files and patterns worth scrutinizing.",
+  },
+  {
+    step: "deep-dive",
+    label: "Deep-dive",
+    detail: "Analyze selected files and produce a structured report.",
+  },
+];
+
+function providerLabelFromId(
+  configs: ProviderConfig[],
+  providerId?: string,
+): string {
+  if (!providerId) return "unknown";
+  const config = configs.find((c) => c.id === providerId);
+  return config?.name ?? providerId;
+}
+
+type ProgressStep = {
+  step: string;
+  label: string;
+};
+
+function ModelProgressCard({
+  label,
+  provider,
+  model,
+  progress,
+  isJudge,
+  steps = competitionModelSteps,
+}: {
+  label: string;
+  provider?: string;
+  model?: string;
+  progress?: import("@/app/components/audit-jobs").CompetitionModelProgress;
+  isJudge?: boolean;
+  steps?: ProgressStep[];
+}) {
+  const currentStep = progress?.currentStep;
+  const completedSteps = progress?.completedSteps ?? [];
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border bg-card p-4",
+        isJudge && "border-primary/30 bg-primary/5",
+      )}
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <div
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg",
+            isJudge
+              ? "bg-primary text-primary-foreground"
+              : "bg-primary/10 text-primary",
+          )}
+        >
+          {isJudge ? (
+            <Scale className="h-4 w-4" />
+          ) : (
+            <Bot className="h-4 w-4" />
+          )}
+        </div>
+        <div>
+          <p className="text-sm font-semibold">{label}</p>
+          <p className="text-xs text-muted-foreground">
+            {provider ? `${provider} · ` : ""}
+            {model ?? "default"}
+          </p>
+        </div>
+      </div>
+      <ol className="space-y-2">
+        {steps.map((s) => {
+          const isCompleted = completedSteps.includes(s.step);
+          const isActive = currentStep === s.step;
+          return (
+            <li key={s.step} className="flex items-center gap-2">
+              <div
+                className={cn(
+                  "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs",
+                  isCompleted
+                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                    : isActive
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground",
+                )}
+              >
+                {isCompleted ? (
+                  <CheckCircle2 className="h-3 w-3" />
+                ) : isActive ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                )}
+              </div>
+              <span
+                className={cn(
+                  "text-xs",
+                  isCompleted || isActive
+                    ? "text-foreground"
+                    : "text-muted-foreground",
+                )}
+              >
+                {s.label}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+interface ProviderModelSelection {
+  providerId: string;
+  model: string;
+}
+
+function ModelPicker({
+  label,
+  configs,
+  value,
+  onChange,
+  description,
+}: {
+  label: string;
+  configs: ProviderConfig[];
+  value: ProviderModelSelection;
+  onChange: (value: ProviderModelSelection) => void;
+  description?: string;
+}) {
+  const selectedConfig = configs.find((c) => c.id === value.providerId);
+  const inputId = `${label.replace(/\s+/g, "-").toLowerCase()}-model`;
+
+  return (
+    <div className="space-y-1.5">
+      <label
+        htmlFor={inputId}
+        className="text-xs font-medium text-muted-foreground"
+      >
+        {label}
+      </label>
+      <div className="grid grid-cols-[1fr_1fr] gap-2">
+        <select
+          value={value.providerId}
+          onChange={(e) => {
+            const config = configs.find((c) => c.id === e.target.value);
+            onChange({
+              providerId: e.target.value,
+              model: config?.models[0] ?? "",
+            });
+          }}
+          aria-label={`${label} provider`}
+          className="h-10 w-full appearance-none rounded-lg border border-border bg-background px-2 pr-6 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {configs.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <select
+          id={inputId}
+          value={value.model}
+          onChange={(e) =>
+            onChange({ ...value, model: e.target.value })
+          }
+          disabled={!selectedConfig || selectedConfig.models.length === 0}
+          aria-label={`${label} model`}
+          className="h-10 w-full appearance-none rounded-lg border border-border bg-background px-2 pr-6 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {selectedConfig ? (
+            selectedConfig.models.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))
+          ) : (
+            <option value="">No provider</option>
+          )}
+        </select>
+      </div>
+      {description && (
+        <p className="text-xs text-muted-foreground">{description}</p>
+      )}
+    </div>
+  );
+}
 
 export default function Home() {
   const { jobs, startAudit, cancelAudit } = useAuditJobs();
@@ -235,6 +445,23 @@ export default function Home() {
   const [versionsLatest, setVersionsLatest] = React.useState<string | null>(
     null,
   );
+  const [advancedOpen, setAdvancedOpen] = React.useState(false);
+  const [competitionMode, setCompetitionMode] = React.useState(false);
+  const [competitionModelA, setCompetitionModelA] =
+    React.useState<ProviderModelSelection>({
+      providerId: "",
+      model: "",
+    });
+  const [competitionModelB, setCompetitionModelB] =
+    React.useState<ProviderModelSelection>({
+      providerId: "",
+      model: "",
+    });
+  const [competitionMergeModel, setCompetitionMergeModel] =
+    React.useState<ProviderModelSelection>({
+      providerId: "",
+      model: "",
+    });
 
   const activeJob = activeJobId
     ? jobs.find((job) => job.id === activeJobId)
@@ -364,19 +591,24 @@ export default function Home() {
       const normalizedUrl = normalizeUrl(libraryUrl);
       const normalizedVersion = version.trim() || undefined;
 
-      const llmConfig: AuditLlmConfig | undefined = selectedConfig
-        ? {
-            providerId: selectedConfig.id,
-            model: effectiveModel,
-          }
-        : undefined;
-
-      const { jobId, done } = startAudit({
+      const input: RunAuditInput = {
         libraryUrl: normalizedUrl,
         version: normalizedVersion,
         prompt: prompt.trim() || undefined,
-        llmConfig,
-      });
+      };
+      if (competitionMode) {
+        input.competitionMode = {
+          enabled: true,
+          modelA: competitionModelA,
+          modelB: competitionModelB,
+          mergeModel: competitionMergeModel,
+        };
+      } else if (selectedConfig) {
+        input.providerId = selectedConfig.id;
+        input.model = effectiveModel;
+      }
+
+      const { jobId, done } = startAudit(input);
       setActiveJobId(jobId);
 
       const outcome = await done;
@@ -391,7 +623,18 @@ export default function Home() {
       }
       setActiveJobId(null);
     },
-    [libraryUrl, version, prompt, effectiveModel, selectedConfig, startAudit],
+    [
+      libraryUrl,
+      version,
+      prompt,
+      effectiveModel,
+      selectedConfig,
+      startAudit,
+      competitionMode,
+      competitionModelA,
+      competitionModelB,
+      competitionMergeModel,
+    ],
   );
 
   const handleCancelAudit = React.useCallback(() => {
@@ -613,10 +856,121 @@ export default function Home() {
                     />
                   </div>
 
-                  <Button
+                  <div className="overflow-hidden rounded-lg border border-border">
+                    <button
+                      type="button"
+                      onClick={() => setAdvancedOpen((prev) => !prev)}
+                      className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium hover:bg-muted/50"
+                      aria-expanded={advancedOpen}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Settings className="h-4 w-4 text-muted-foreground" />
+                        Advanced
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 text-muted-foreground transition-transform",
+                          advancedOpen && "rotate-180",
+                        )}
+                      />
+                    </button>
+                    {advancedOpen && (
+                      <div className="space-y-4 border-t border-border bg-muted/30 px-4 py-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCompetitionMode((prev) => {
+                              const next = !prev;
+                              if (next && selectedConfig) {
+                                const defaultSelection = {
+                                  providerId: selectedConfig.id,
+                                  model: selectedConfig.models[0] ?? "",
+                                };
+                                setCompetitionModelA((current) =>
+                                  current.providerId ? current : defaultSelection,
+                                );
+                                setCompetitionModelB((current) =>
+                                  current.providerId ? current : defaultSelection,
+                                );
+                                setCompetitionMergeModel((current) =>
+                                  current.providerId ? current : defaultSelection,
+                                );
+                              }
+                              return next;
+                            });
+                          }}
+                          className="flex w-full items-center justify-between"
+                          aria-pressed={competitionMode}
+                        >
+                          <span className="text-sm font-medium">
+                            Competition mode
+                          </span>
+                          <span
+                            className={cn(
+                              "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                              competitionMode
+                                ? "bg-primary"
+                                : "bg-muted-foreground/30",
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "inline-block h-4 w-4 transform rounded-full bg-background transition-transform",
+                                competitionMode
+                                  ? "translate-x-6"
+                                  : "translate-x-1",
+                              )}
+                            />
+                          </span>
+                        </button>
+                        <p className="text-xs text-muted-foreground">
+                          Run two models against the same audit in parallel,
+                          then use a third model to remove duplicates and
+                          combine the results into one report.
+                        </p>
+
+                        {competitionMode && (
+                          <div className="space-y-4">
+                            <div className="grid gap-4 sm:grid-cols-2">
+                              <ModelPicker
+                                label="Model A"
+                                configs={configs}
+                                value={competitionModelA}
+                                onChange={setCompetitionModelA}
+                              />
+                              <ModelPicker
+                                label="Model B"
+                                configs={configs}
+                                value={competitionModelB}
+                                onChange={setCompetitionModelB}
+                              />
+                            </div>
+                            <ModelPicker
+                              label="Merge model"
+                              configs={configs}
+                              value={competitionMergeModel}
+                              onChange={setCompetitionMergeModel}
+                              description="This model removes duplicate findings and combines both reports into one."
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                    <Button
                     type="submit"
                     disabled={
-                      loading || !libraryUrl.trim() || !selectedConfig || !effectiveModel
+                      loading ||
+                      !libraryUrl.trim() ||
+                      (competitionMode
+                        ? !competitionModelA.providerId ||
+                          !competitionModelA.model ||
+                          !competitionModelB.providerId ||
+                          !competitionModelB.model ||
+                          !competitionMergeModel.providerId ||
+                          !competitionMergeModel.model
+                        : !selectedConfig || !effectiveModel)
                     }
                     className="h-12 px-8 text-base"
                   >
@@ -770,29 +1124,36 @@ export default function Home() {
           <section className="mx-auto max-w-6xl px-4 pb-24 sm:px-6 lg:px-8">
             <Card className="mx-auto max-w-3xl">
               <CardHeader>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <Loader2 className="h-6 w-6 shrink-0 animate-spin text-primary" />
-                    <div>
-                      <CardTitle className="text-xl">
-                        Auditing {displayUrlLabel(activeJob.libraryUrl)}
-                      </CardTitle>
-                      <CardDescription>
-                        {activeJob.source === "npm"
-                          ? "npm package"
-                          : "GitHub repository"}{" "}
-                        · started{" "}
-                        {new Date(activeJob.startedAt).toLocaleTimeString()} ·
-                        elapsed{" "}
-                        <ElapsedTime
-                          since={activeJob.startedAt}
-                          className="tabular-nums"
-                        />
-                      </CardDescription>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <Loader2 className="h-6 w-6 shrink-0 animate-spin text-primary" />
+                      <div>
+                        <CardTitle className="text-xl">
+                          Auditing {displayUrlLabel(activeJob.libraryUrl)}
+                        </CardTitle>
+                        <CardDescription>
+                          {activeJob.source === "npm"
+                            ? "npm package"
+                            : "GitHub repository"}{" "}
+                          · started{" "}
+                          {new Date(activeJob.startedAt).toLocaleTimeString()} ·
+                          elapsed{" "}
+                          <ElapsedTime
+                            since={activeJob.startedAt}
+                            className="tabular-nums"
+                          />
+                        </CardDescription>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <Badge variant="secondary">{activeJob.source}</Badge>
+                      {activeJob.competitionMode && (
+                        <Badge variant="outline" className="text-xs">
+                          Competition mode
+                        </Badge>
+                      )}
                     </div>
                   </div>
-                  <Badge variant="secondary">{activeJob.source}</Badge>
-                </div>
               </CardHeader>
               <CardContent className="space-y-6">
                 {activeJob.prompt && (
@@ -800,6 +1161,31 @@ export default function Home() {
                     <span className="font-medium">Custom prompt: </span>
                     <span className="text-muted-foreground">
                       {activeJob.prompt}
+                    </span>
+                  </div>
+                )}
+                {activeJob.model && !activeJob.competitionMode && (
+                  <div className="rounded-lg bg-muted/50 px-4 py-3 text-sm">
+                    <span className="font-medium">Model: </span>
+                    <span className="text-muted-foreground">
+                      {activeJob.model.providerId ?? activeJob.model.provider}/
+                      {activeJob.model.model}
+                    </span>
+                  </div>
+                )}
+                {activeJob.competitionMode && (
+                  <div className="rounded-lg bg-muted/50 px-4 py-3 text-sm">
+                    <span className="font-medium">Competition mode: </span>
+                    <span className="text-muted-foreground">
+                      {activeJob.competitionMode.modelA.providerId ??
+                        activeJob.competitionMode.modelA.provider}
+                      /{activeJob.competitionMode.modelA.model} vs{" "}
+                      {activeJob.competitionMode.modelB.providerId ??
+                        activeJob.competitionMode.modelB.provider}
+                      /{activeJob.competitionMode.modelB.model}, merged by{" "}
+                      {activeJob.competitionMode.mergeModel.providerId ??
+                        activeJob.competitionMode.mergeModel.provider}
+                      /{activeJob.competitionMode.mergeModel.model}
                     </span>
                   </div>
                 )}
@@ -827,68 +1213,118 @@ export default function Home() {
                       )}
                     </div>
                   </div>
-                  <ol className="space-y-3">
-                    {pipelineSteps.map((step, index) => {
-                      const isMetadataOnlyAudit =
-                        activeJob.downloadDetail === "metadata only";
-                      const isRelevant =
-                        !isMetadataOnlyAudit || step.step !== "deep-dive";
-                      if (!isRelevant) return null;
 
-                      const stepMatchesCurrent =
-                        activeJob.currentStep === step.step ||
-                        (step.step === "investigate" &&
-                          activeJob.currentStep === "metadata-only");
-                      const stepMatchesCompleted =
-                        activeJob.completedSteps?.includes(step.step) ?? false;
-                      const metadataOnlyCompleted =
-                        step.step === "investigate" &&
-                        activeJob.completedSteps?.includes("metadata-only");
-                      const isCompleted =
-                        stepMatchesCompleted || !!metadataOnlyCompleted;
-                      const isActive = stepMatchesCurrent;
-
-                      return (
-                        <li
-                          key={step.label}
-                          className={cn(
-                            "flex items-start gap-3 transition-opacity",
-                            !isActive && !isCompleted && "opacity-50",
+                  {activeJob.competitionMode ? (
+                    <div className="space-y-4">
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <ModelProgressCard
+                          label="Model A"
+                          provider={providerLabelFromId(
+                            configs,
+                            activeJob.competitionMode.modelA.providerId,
                           )}
-                        >
-                          <div
+                          model={activeJob.competitionMode.modelA.model}
+                          progress={activeJob.modelAProgress}
+                        />
+                        <ModelProgressCard
+                          label="Model B"
+                          provider={providerLabelFromId(
+                            configs,
+                            activeJob.competitionMode.modelB.providerId,
+                          )}
+                          model={activeJob.competitionMode.modelB.model}
+                          progress={activeJob.modelBProgress}
+                        />
+                      </div>
+                      <div className="mx-auto max-w-sm">
+                        <ModelProgressCard
+                          label="Judge"
+                          provider={providerLabelFromId(
+                            configs,
+                            activeJob.competitionMode.mergeModel.providerId,
+                          )}
+                          model={activeJob.competitionMode.mergeModel.model}
+                          progress={{
+                            currentStep:
+                              activeJob.currentStep === "judge"
+                                ? "judge"
+                                : undefined,
+                            completedSteps: activeJob.completedSteps?.includes(
+                              "judge",
+                            )
+                              ? ["judge"]
+                              : [],
+                          }}
+                          steps={[{ step: "judge", label: "Merge findings" }]}
+                          isJudge
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <ol className="space-y-3">
+                      {pipelineSteps.map((step, index) => {
+                        const isMetadataOnlyAudit =
+                          activeJob.downloadDetail === "metadata only";
+                        const isRelevant =
+                          !isMetadataOnlyAudit || step.step !== "deep-dive";
+                        if (!isRelevant) return null;
+
+                        const stepMatchesCurrent =
+                          activeJob.currentStep === step.step ||
+                          (step.step === "investigate" &&
+                            activeJob.currentStep === "metadata-only");
+                        const stepMatchesCompleted =
+                          activeJob.completedSteps?.includes(step.step) ??
+                          false;
+                        const metadataOnlyCompleted =
+                          step.step === "investigate" &&
+                          activeJob.completedSteps?.includes("metadata-only");
+                        const isCompleted =
+                          stepMatchesCompleted || !!metadataOnlyCompleted;
+                        const isActive = stepMatchesCurrent;
+
+                        return (
+                          <li
+                            key={step.label}
                             className={cn(
-                              "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
-                              isCompleted
-                                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                                : isActive
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-primary/10 text-primary",
+                              "flex items-start gap-3 transition-opacity",
+                              !isActive && !isCompleted && "opacity-50",
                             )}
                           >
-                            {isCompleted ? (
-                              <CheckCircle2 className="h-4 w-4" />
-                            ) : isActive ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <step.icon className="h-4 w-4" />
-                            )}
-                          </div>
-                          <div className="flex-1">
-                            <p className="text-sm font-medium">
-                              {index + 1}. {step.label}
-                            </p>
-                            <p className="text-sm text-muted-foreground">
-                              {step.detail}
-                              {step.step === "download" &&
-                                activeJob.downloadDetail &&
-                                ` · ${activeJob.downloadDetail}`}
-                            </p>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ol>
+                            <div
+                              className={cn(
+                                "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+                                isCompleted
+                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                                  : isActive
+                                    ? "bg-primary text-primary-foreground"
+                                    : "bg-primary/10 text-primary",
+                              )}
+                            >
+                              {isCompleted ? (
+                                <CheckCircle2 className="h-4 w-4" />
+                              ) : isActive ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <step.icon className="h-4 w-4" />
+                              )}
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-sm font-medium">
+                                {index + 1}. {step.label}
+                              </p>
+                              <p className="text-sm text-muted-foreground">
+                                {step.detail}
+                                {step.step === "download" &&
+                                  activeJob.downloadDetail &&
+                                  ` · ${activeJob.downloadDetail}`}
+                              </p>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
@@ -923,18 +1359,29 @@ export default function Home() {
                   Audit report for {result.name}
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  Generated by{" "}
-                  {activeJob?.interactions?.[0]?.provider
-                    ? providerLabels[
-                        activeJob.interactions[0].provider as "openai" | "anthropic" | "google"
-                      ]
-                    : selectedConfig
-                      ? providerLabels[selectedConfig.provider]
-                      : "AI"}{" "}
-                  {activeJob?.interactions?.[0]?.model || effectiveModel
-                    ? `(${activeJob?.interactions?.[0]?.model || effectiveModel})`
-                    : ""}{" "}
-                  from public library metadata.
+                  {result.competitionReadout ? (
+                    <>
+                      Competition mode: judged by{" "}
+                      {result.competitionReadout.judge.provider} ·{" "}
+                      {result.competitionReadout.judge.model}. Model A and B
+                      reports are available in the Competition tab.
+                    </>
+                  ) : (
+                    <>
+                      Generated by{" "}
+                      {activeJob?.interactions?.[0]?.provider
+                        ? providerLabels[
+                            activeJob.interactions[0].provider as "openai" | "anthropic" | "google"
+                          ]
+                        : selectedConfig
+                          ? providerLabels[selectedConfig.provider]
+                          : "AI"}{" "}
+                      {activeJob?.interactions?.[0]?.model || effectiveModel
+                        ? `(${activeJob?.interactions?.[0]?.model || effectiveModel})`
+                        : ""}{" "}
+                      from public library metadata.
+                    </>
+                  )}
                 </p>
               </div>
             </div>
@@ -942,6 +1389,14 @@ export default function Home() {
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="mb-6 flex-wrap">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
+                {result.competitionReadout && (
+                  <TabsTrigger value="competition">
+                    Competition
+                    <Badge variant="secondary" className="ml-2">
+                      A/B
+                    </Badge>
+                  </TabsTrigger>
+                )}
                 <TabsTrigger value="investigation">
                   Investigation
                   <Badge variant="secondary" className="ml-2">
@@ -1049,6 +1504,12 @@ export default function Home() {
                   </CardContent>
                 </Card>
               </TabsContent>
+
+              {result.competitionReadout && (
+                <TabsContent value="competition" className="space-y-4">
+                  <CompetitionReadoutView result={result} configs={configs} />
+                </TabsContent>
+              )}
 
               <TabsContent value="investigation" className="space-y-4">
                 {result.investigationAreas.length === 0 ? (

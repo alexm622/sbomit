@@ -51,6 +51,27 @@ const investigationAreaItemSchema = z.object({
   files: z.array(z.string()).default([]),
 });
 
+export const PROVIDERS: { value: Provider; label: string }[] = [
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "google", label: "Google" },
+];
+
+export interface CompetitionModelConfig {
+  provider: Provider;
+  model: string;
+}
+
+export const MODEL_SUGGESTIONS: Record<Provider, string[]> = {
+  openai: ["gpt-4o-mini", "gpt-4o", "o1-mini", "o3-mini"],
+  anthropic: [
+    "claude-3-5-sonnet-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-haiku-20240307",
+  ],
+  google: ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest"],
+};
+
 const investigationSchema = z.object({
   investigationAreas: z.preprocess(
     (value) =>
@@ -771,4 +792,93 @@ export async function runLibraryAudit(
       error instanceof Error ? error.message : "Audit failed unexpectedly.",
     );
   }
+}
+
+const mergeFindingAttributionSchema = z.object({
+  type: z.enum(["risk", "investigationArea", "deepDiveFinding"]),
+  index: z.number().int().min(0),
+  sources: z.array(z.enum(["A", "B", "judge"])),
+});
+
+const mergeExclusionSchema = z.object({
+  type: z.enum(["risk", "investigationArea", "deepDiveFinding"]),
+  fromModel: z.enum(["A", "B"]),
+  titleOrFile: z.string(),
+  reason: z.string(),
+});
+
+const competitionMergeResultSchema = z.object({
+  merged: auditResultSchema,
+  attributions: z.array(mergeFindingAttributionSchema).default([]),
+  exclusions: z.array(mergeExclusionSchema).default([]),
+});
+
+const MERGE_AUDITS_PROMPT = `You are a senior software supply-chain auditor reviewing two independent AI audits of the same library.
+
+Your task is to merge them into a single, coherent audit report and document exactly how you merged them. Follow these rules:
+
+- Remove duplicate findings: if both audits report the same risk, deep-dive finding, or investigation area, keep only one representative entry (prefer the one with stronger evidence or higher severity).
+- Preserve unique findings from both audits.
+- Add your own findings only if both audits missed something important and you can cite specific evidence from the audit data provided.
+- Reconcile conflicting assessments: if the audits disagree on severity or interpretation, use your judgment and explain briefly in the summary.
+- Produce one unified summary that reflects the combined assessment.
+- Compute a single trust score (0-100) that represents the merged conclusion. Be proportional: start from 100 and subtract for each confirmed issue using the same rubric as the original audits.
+- Keep the same structured output format. Use the library metadata (name, version, etc.) from Audit A unless Audit B clearly has more accurate data.
+
+ATTRIBUTION: For every item in the merged report, record which model(s) originated it in the "attributions" array. Use source "A" for Audit A, "B" for Audit B, and "judge" only for findings you add that neither audit contained. The index must correspond to the position of the item in the merged report array (0-based).
+
+EXCLUSIONS: For every finding you remove as a duplicate, low-quality, or unsupported, record it in the "exclusions" array. Include the type of item, which model it came from (A or B), a short identifying title or file, and a brief reason for exclusion.
+
+Both audits reviewed the same library and version, so the merged report must have the same name and version.`;
+
+function buildMergeContent(
+  resultA: AuditResult,
+  resultB: AuditResult,
+  userPrompt?: string,
+): string {
+  const metadata = `Library: ${resultA.name}@${resultA.version}`;
+  const promptSection = userPrompt
+    ? `User focus: ${userPrompt}\n\n`
+    : "";
+  return `${metadata}\n\n${promptSection}Audit A:\n${JSON.stringify(resultA, null, 2)}\n\nAudit B:\n${JSON.stringify(resultB, null, 2)}\n\n${MERGE_AUDITS_PROMPT}`;
+}
+
+function applyAttributions(
+  merged: AuditResult,
+  attributions: z.infer<typeof mergeFindingAttributionSchema>[],
+): AuditResult {
+  for (const attr of attributions) {
+    if (attr.type === "risk" && merged.risks[attr.index]) {
+      merged.risks[attr.index].sources = attr.sources;
+    } else if (attr.type === "investigationArea" && merged.investigationAreas[attr.index]) {
+      merged.investigationAreas[attr.index].sources = attr.sources;
+    } else if (attr.type === "deepDiveFinding" && merged.deepDiveFindings[attr.index]) {
+      merged.deepDiveFindings[attr.index].sources = attr.sources;
+    }
+  }
+  return merged;
+}
+
+export interface CompetitionMergeOutput {
+  result: AuditResult;
+  exclusions: z.infer<typeof mergeExclusionSchema>[];
+  interaction: LlmInteraction;
+}
+
+export async function mergeAuditResults(
+  resultA: AuditResult,
+  resultB: AuditResult,
+  mergeConfig: LlmConfig,
+  userPrompt?: string,
+): Promise<CompetitionMergeOutput> {
+  const content = buildMergeContent(resultA, resultB, userPrompt);
+  const { parsed, interaction } = await runStructured(
+    mergeConfig,
+    MERGE_AUDITS_PROMPT,
+    content,
+    competitionMergeResultSchema,
+    "merged_audit_result",
+  );
+  const merged = applyAttributions(parsed.merged, parsed.attributions);
+  return { result: merged, exclusions: parsed.exclusions, interaction };
 }

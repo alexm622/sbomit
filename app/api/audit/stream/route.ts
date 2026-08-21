@@ -1,4 +1,9 @@
-import { runAudit, parseRequestBody, type AuditEvent } from "@/app/lib/run-audit";
+import {
+  runAudit,
+  parseRequestBody,
+  type AuditEvent,
+  type RunAuditInput,
+} from "@/app/lib/run-audit";
 import { isAuditError } from "@/app/lib/errors";
 
 function encodeEvent(event: AuditEvent): string {
@@ -16,7 +21,7 @@ export async function POST(request: Request) {
     );
   }
 
-  let input: ReturnType<typeof parseRequestBody>;
+  let input: RunAuditInput;
   try {
     input = parseRequestBody(body);
   } catch (error) {

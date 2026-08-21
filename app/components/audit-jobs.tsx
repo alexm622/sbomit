@@ -3,9 +3,20 @@
 import * as React from "react";
 import type { AuditResult } from "@/app/lib/audit";
 import type { LlmInteraction } from "@/app/lib/llm";
-import type { AuditEvent, AuditStep } from "@/app/lib/run-audit";
+import type {
+  AuditEvent,
+  AuditStep,
+  CompetitionModeConfig,
+  LlmSelection,
+  RunAuditInput,
+} from "@/app/lib/run-audit";
 
 export type AuditJobStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface CompetitionModelProgress {
+  currentStep?: string;
+  completedSteps: string[];
+}
 
 export interface AuditJob {
   id: string;
@@ -25,6 +36,10 @@ export interface AuditJob {
   lastLlmPhase?: string;
   estimatedFinishAt?: number;
   downloadDetail?: string;
+  model?: LlmSelection;
+  competitionMode?: Omit<CompetitionModeConfig, "enabled">;
+  modelAProgress?: CompetitionModelProgress;
+  modelBProgress?: CompetitionModelProgress;
 }
 
 export interface AuditJobMeta {
@@ -33,6 +48,7 @@ export interface AuditJobMeta {
   reportId: number;
   codebaseInspected?: boolean;
   interactions?: LlmInteraction[];
+  competitionReadout?: import("@/app/lib/audit").CompetitionReadout;
 }
 
 export type AuditOutcome =
@@ -52,12 +68,7 @@ export interface AuditLlmConfig {
 
 interface AuditJobsContextValue {
   jobs: AuditJob[];
-  startAudit(input: {
-    libraryUrl: string;
-    version?: string;
-    prompt?: string;
-    llmConfig?: AuditLlmConfig;
-  }): StartAuditHandle;
+  startAudit(input: RunAuditInput): StartAuditHandle;
   cancelAudit(jobId: string): void;
   dismissJob(jobId: string): void;
 }
@@ -108,12 +119,7 @@ export function AuditJobsProvider({
   );
 
   const startAudit = React.useCallback(
-    (input: {
-      libraryUrl: string;
-      version?: string;
-      prompt?: string;
-      llmConfig?: AuditLlmConfig;
-    }): StartAuditHandle => {
+    (input: RunAuditInput): StartAuditHandle => {
       const jobId = createJobId();
       const controller = new AbortController();
       abortControllers.current.set(jobId, controller);
@@ -127,25 +133,36 @@ export function AuditJobsProvider({
         status: "running",
         startedAt: Date.now(),
         completedSteps: [],
+        model:
+          input.providerId || input.provider || input.model
+            ? {
+                providerId: input.providerId,
+                provider: input.provider,
+                model: input.model,
+              }
+            : undefined,
+        competitionMode: input.competitionMode?.enabled
+          ? {
+              modelA: input.competitionMode.modelA,
+              modelB: input.competitionMode.modelB,
+              mergeModel: input.competitionMode.mergeModel,
+            }
+          : undefined,
+        modelAProgress: input.competitionMode?.enabled
+          ? { completedSteps: [] }
+          : undefined,
+        modelBProgress: input.competitionMode?.enabled
+          ? { completedSteps: [] }
+          : undefined,
       };
       setJobs((prev) => [job, ...prev]);
 
       const done = (async (): Promise<AuditOutcome> => {
         try {
-          const body: Record<string, unknown> = {
-            libraryUrl: input.libraryUrl,
-          };
-          if (input.version) body.version = input.version;
-          if (input.prompt) body.prompt = input.prompt;
-          if (input.llmConfig) {
-            body.providerId = input.llmConfig.providerId;
-            body.model = input.llmConfig.model;
-          }
-
           const res = await fetch("/api/audit/stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+            body: JSON.stringify(input),
             signal: controller.signal,
           });
 
@@ -197,6 +214,23 @@ export function AuditJobsProvider({
                         : prev.downloadDetail,
                   };
                 });
+              } else if (event.type === "competition") {
+                updateJob(jobId, (prev) => {
+                  const key =
+                    event.model === "A" ? "modelAProgress" : "modelBProgress";
+                  const progress = prev[key] ?? { completedSteps: [] };
+                  const completed = new Set(progress.completedSteps);
+                  if (event.status === "completed") {
+                    completed.add(event.step);
+                  }
+                  return {
+                    [key]: {
+                      currentStep:
+                        event.status === "started" ? event.step : undefined,
+                      completedSteps: Array.from(completed),
+                    },
+                  };
+                });
               } else if (event.type === "llm") {
                 updateJob(jobId, {
                   tokensPerSecond: event.tokensPerSecond,
@@ -220,6 +254,8 @@ export function AuditJobsProvider({
             codebaseInspected: finalOutcome.meta.codebaseInspected,
             interactions: finalOutcome.meta.interactions,
             currentStep: undefined,
+            modelAProgress: undefined,
+            modelBProgress: undefined,
           });
           return finalOutcome;
         } catch (error) {

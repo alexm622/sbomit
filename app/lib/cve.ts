@@ -29,6 +29,12 @@ interface OsvAffected {
   versions?: string[];
 }
 
+interface OsvInterval {
+  introduced: string;
+  fixed?: string;
+  last_affected?: string;
+}
+
 interface OsvVulnerability {
   id: string;
   aliases?: string[];
@@ -46,6 +52,114 @@ interface OsvVulnerability {
 
 interface OsvQueryResponse {
   vulns?: OsvVulnerability[];
+}
+
+function parseSemver(version: string): number[] | undefined {
+  // Strip leading 'v' and any build/prerelease metadata for comparison.
+  const cleaned = version.replace(/^v/, "").replace(/[+-].*$/, "");
+  const parts = cleaned.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length === 0 || parts.some((n) => Number.isNaN(n))) {
+    return undefined;
+  }
+  return parts;
+}
+
+function compareSemver(a: string, b: string): number {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) {
+    // Fall back to lexicographic comparison for non-semver strings.
+    return a.localeCompare(b);
+  }
+  const maxLen = Math.max(pa.length, pb.length);
+  for (let i = 0; i < maxLen; i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
+function parseIntervals(
+  events: Array<{ introduced?: string; fixed?: string; last_affected?: string }>,
+): OsvInterval[] {
+  const intervals: OsvInterval[] = [];
+  let current: OsvInterval | null = null;
+
+  for (const event of events) {
+    if (event.introduced !== undefined) {
+      current = { introduced: event.introduced };
+      intervals.push(current);
+    }
+    if (current) {
+      if (event.fixed !== undefined) {
+        current.fixed = event.fixed;
+        current = null;
+      } else if (event.last_affected !== undefined) {
+        current.last_affected = event.last_affected;
+        current = null;
+      }
+    }
+  }
+
+  return intervals;
+}
+
+function versionInInterval(version: string, interval: OsvInterval): boolean {
+  const afterIntroduced =
+    interval.introduced === "0" || compareSemver(version, interval.introduced) >= 0;
+  if (!afterIntroduced) return false;
+
+  if (interval.fixed !== undefined && compareSemver(version, interval.fixed) >= 0) {
+    return false;
+  }
+
+  if (
+    interval.last_affected !== undefined &&
+    compareSemver(version, interval.last_affected) > 0
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function hasAffectedRangeData(affected: OsvAffected): boolean {
+  return (
+    (affected.versions !== undefined && affected.versions.length > 0) ||
+    (affected.ranges !== undefined && affected.ranges.length > 0)
+  );
+}
+
+function isVulnerabilityAffectingVersion(
+  version: string,
+  vuln: OsvVulnerability,
+): boolean {
+  const affected = vuln.affected ?? [];
+  if (affected.length === 0 || !affected.some(hasAffectedRangeData)) {
+    // No usable range data: keep the advisory and let downstream logic decide.
+    return true;
+  }
+
+  for (const aff of affected) {
+    if (!hasAffectedRangeData(aff)) continue;
+
+    // Explicit affected-version list is authoritative when present.
+    if (aff.versions && aff.versions.length > 0) {
+      if (aff.versions.includes(version)) return true;
+      // If versions are listed but ours isn't, still fall through to ranges
+      // because some OSV entries use both and the list may be incomplete.
+    }
+
+    for (const range of aff.ranges ?? []) {
+      const intervals = parseIntervals(range.events ?? []);
+      for (const interval of intervals) {
+        if (versionInInterval(version, interval)) return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function parseRetryAfter(response: Response): number | undefined {
@@ -125,7 +239,9 @@ export async function fetchNpmVulnerabilities(
   }
 
   const data = (await res.json()) as OsvQueryResponse;
-  return (data.vulns ?? []).map(normalizeOsvVulnerability);
+  return (data.vulns ?? [])
+    .filter((vuln) => isVulnerabilityAffectingVersion(version, vuln))
+    .map(normalizeOsvVulnerability);
 }
 
 export async function fetchGitHubCommitForRef(

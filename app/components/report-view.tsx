@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Badge } from "@/app/components/ui/badge";
 import { Card, CardContent } from "@/app/components/ui/card";
-import type { AuditResult } from "@/app/lib/audit";
+import type { AuditResult, FindingSource } from "@/app/lib/audit";
 
 const severityBadgeVariant = (
   severity: "critical" | "high" | "medium" | "low",
@@ -12,6 +12,23 @@ const severityBadgeVariant = (
   if (severity === "medium") return "warning";
   return "secondary";
 };
+
+function SourceBadges({ sources }: { sources?: FindingSource[] | null }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {sources.map((source) => (
+        <Badge
+          key={source}
+          variant={source === "judge" ? "default" : "outline"}
+          className="text-xs"
+        >
+          {source === "judge" ? "Judge added" : `Model ${source}`}
+        </Badge>
+      ))}
+    </div>
+  );
+}
 
 function ReportSection({
   title,
@@ -74,7 +91,10 @@ export function ReportView({ result }: { result: AuditResult }) {
                 key={idx}
                 className="rounded-lg border bg-background p-3 text-sm"
               >
-                <p className="font-medium">{area.area}</p>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <p className="font-medium">{area.area}</p>
+                  <SourceBadges sources={area.sources} />
+                </div>
                 <p className="text-muted-foreground">{area.rationale}</p>
                 {area.files.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
@@ -99,11 +119,14 @@ export function ReportView({ result }: { result: AuditResult }) {
                 key={idx}
                 className="rounded-lg border bg-background p-3 text-sm"
               >
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <p className="font-medium">{risk.title}</p>
-                  <Badge variant={severityBadgeVariant(risk.severity)}>
-                    {risk.severity}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <SourceBadges sources={risk.sources} />
+                    <Badge variant={severityBadgeVariant(risk.severity)}>
+                      {risk.severity}
+                    </Badge>
+                  </div>
                 </div>
                 <p className="mt-1 text-muted-foreground">{risk.description}</p>
               </div>
@@ -122,11 +145,14 @@ export function ReportView({ result }: { result: AuditResult }) {
                 key={idx}
                 className="rounded-lg border bg-background p-3 text-sm"
               >
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <p className="font-medium">{finding.file}</p>
-                  <Badge variant={severityBadgeVariant(finding.severity)}>
-                    {finding.severity}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <SourceBadges sources={finding.sources} />
+                    <Badge variant={severityBadgeVariant(finding.severity)}>
+                      {finding.severity}
+                    </Badge>
+                  </div>
                 </div>
                 <p className="text-muted-foreground">{finding.area}</p>
                 <p className="mt-1 font-medium">{finding.issue}</p>

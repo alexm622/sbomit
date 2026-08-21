@@ -18,6 +18,7 @@ vi.mock("./audit", () => {
     resolveLibrary: (...args: unknown[]) => mockResolveLibrary(...args),
     resolveCodebase: (...args: unknown[]) => mockResolveCodebase(...args),
     computeCacheKey: (...args: unknown[]) => mockComputeCacheKey(...args),
+    postProcessAuditResult: (result: AuditResult) => result,
   };
 });
 
@@ -25,6 +26,17 @@ vi.mock("./llm", () => {
   return {
     runLibraryAudit: (...args: unknown[]) => mockRunLibraryAudit(...args),
     getLlmConfig: () => mockGetLlmConfig(),
+    getLlmConfigForProviderModel: (_provider: string, model: string) => ({
+      provider: "openai" as const,
+      apiKey: "test",
+      model,
+    }),
+    mergeAuditResults: () =>
+      Promise.resolve({
+        result: baseResult,
+        exclusions: [],
+        interaction: baseInteraction,
+      }),
   };
 });
 
@@ -154,6 +166,59 @@ describe("runAudit", () => {
 
     const etaEvents = events.filter((e) => e.type === "eta");
     expect(etaEvents.length).toBeGreaterThan(0);
+  });
+
+  it("runs two models and merges the results in competition mode", async () => {
+    const modelAInteraction = {
+      ...baseInteraction,
+      model: "gpt-4o",
+      systemPrompt: "deep code review",
+    };
+    const modelBInteraction = {
+      ...baseInteraction,
+      model: "claude-3-5-sonnet-20241022",
+      systemPrompt: "deep code review",
+    };
+    mockRunLibraryAudit
+      .mockResolvedValueOnce({
+        result: { ...baseResult, score: 80 },
+        interactions: [modelAInteraction],
+      })
+      .mockResolvedValueOnce({
+        result: { ...baseResult, score: 90 },
+        interactions: [modelBInteraction],
+      });
+
+    const events: AuditEvent[] = [];
+    const { result, meta } = await runAudit(
+      {
+        libraryUrl: "https://www.npmjs.com/package/lodash",
+        competitionMode: {
+          enabled: true,
+          modelA: { provider: "openai", model: "gpt-4o" },
+          modelB: {
+            provider: "anthropic",
+            model: "claude-3-5-sonnet-20241022",
+          },
+          mergeModel: { provider: "openai", model: "gpt-4o-mini" },
+        },
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    expect(result.name).toBe("lodash");
+    expect(meta.cached).toBe(false);
+    expect(mockRunLibraryAudit).toHaveBeenCalledTimes(2);
+
+    const steps = events
+      .filter((e) => e.type === "step")
+      .map((e) => `${e.step}:${e.status}`);
+    expect(steps).toContain("investigate:started");
+    expect(steps).toContain("investigate:completed");
+    expect(steps).toContain("judge:started");
+    expect(steps).toContain("judge:completed");
   });
 
   it("returns a cached result without running the LLM", async () => {

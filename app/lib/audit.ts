@@ -18,16 +18,44 @@ import { computeScore } from "./score";
 import type { EnrichmentSignals } from "./signals";
 import { formatSignalsForPrompt } from "./signals";
 
+export const findingSourceSchema = z.enum(["A", "B", "judge"]);
+export type FindingSource = z.infer<typeof findingSourceSchema>;
+
+export interface Risk {
+  severity: "critical" | "high" | "medium" | "low";
+  title: string;
+  description: string;
+  sources?: FindingSource[] | null;
+}
+
+export interface InvestigationArea {
+  area: string;
+  rationale: string;
+  files: string[];
+  sources?: FindingSource[] | null;
+}
+
+export interface DeepDiveFinding {
+  area: string;
+  file: string;
+  issue: string;
+  evidence: string;
+  severity: "critical" | "high" | "medium" | "low";
+  sources?: FindingSource[] | null;
+}
+
 const riskSchema = z.object({
   severity: z.enum(["critical", "high", "medium", "low"]),
   title: z.string(),
   description: z.string(),
+  sources: z.array(findingSourceSchema).nullable().default(null),
 });
 
 const investigationAreaSchema = z.object({
   area: z.string(),
   rationale: z.string(),
   files: z.array(z.string()),
+  sources: z.array(findingSourceSchema).nullable().default(null),
 });
 
 const deepDiveFindingSchema = z.object({
@@ -36,6 +64,7 @@ const deepDiveFindingSchema = z.object({
   issue: z.string(),
   evidence: z.string(),
   severity: z.enum(["critical", "high", "medium", "low"]),
+  sources: z.array(findingSourceSchema).nullable().default(null),
 });
 
 const cveSchema = z.object({
@@ -55,7 +84,72 @@ const cveSchema = z.object({
   ),
 });
 
-export const auditResultSchema = z.object({
+export interface CveReport {
+  id: string;
+  aliases: string[];
+  severity: "critical" | "high" | "medium" | "low" | null;
+  title: string;
+  description: string;
+  published: string | null;
+  modified: string | null;
+  fixedVersion: string | null;
+  references: Array<{ type: string | null; url: string }>;
+}
+
+export interface LicenseReport {
+  type: string;
+  compatible: boolean;
+  note: string;
+}
+
+export interface DependencyReport {
+  name: string;
+  version: string;
+  license: string;
+  transitive: boolean;
+}
+
+export interface CompetitionReadout {
+  modelA: {
+    provider: string;
+    model: string;
+    result: AuditResult;
+  };
+  modelB: {
+    provider: string;
+    model: string;
+    result: AuditResult;
+  };
+  judge: {
+    provider: string;
+    model: string;
+  };
+  exclusions: Array<{
+    type: "risk" | "investigationArea" | "deepDiveFinding";
+    fromModel: "A" | "B";
+    titleOrFile: string;
+    reason: string;
+  }>;
+}
+
+export interface AuditResult {
+  name: string;
+  version: string;
+  score: number;
+  summary: string;
+  risks: Risk[];
+  investigationAreas: InvestigationArea[];
+  deepDiveFindings: DeepDiveFinding[];
+  dependencies: DependencyReport[];
+  license: LicenseReport;
+  maintainers: string[];
+  lastPublished: string;
+  weeklyDownloads: string;
+  cves: CveReport[];
+  competitionReadout?: CompetitionReadout | null;
+}
+
+export const auditResultSchema: z.ZodType<AuditResult> = z.object({
   name: z.string(),
   version: z.string(),
   score: z.number().min(0).max(100),
@@ -82,12 +176,36 @@ export const auditResultSchema = z.object({
   lastPublished: z.string().default(""),
   weeklyDownloads: z.string().default(""),
   cves: z.array(cveSchema).default([]),
+  competitionReadout: z
+    .object({
+      modelA: z.object({
+        provider: z.string(),
+        model: z.string(),
+        result: z.any(),
+      }),
+      modelB: z.object({
+        provider: z.string(),
+        model: z.string(),
+        result: z.any(),
+      }),
+      judge: z.object({
+        provider: z.string(),
+        model: z.string(),
+      }),
+      exclusions: z
+        .array(
+          z.object({
+            type: z.enum(["risk", "investigationArea", "deepDiveFinding"]),
+            fromModel: z.enum(["A", "B"]),
+            titleOrFile: z.string(),
+            reason: z.string(),
+          }),
+        )
+        .default([]),
+    })
+    .nullable()
+    .default(null),
 });
-
-export type AuditResult = z.infer<typeof auditResultSchema>;
-export type Risk = z.infer<typeof riskSchema>;
-export type InvestigationArea = z.infer<typeof investigationAreaSchema>;
-export type DeepDiveFinding = z.infer<typeof deepDiveFindingSchema>;
 
 interface NpmMetadata {
   name: string;
@@ -485,5 +603,6 @@ export function postProcessAuditResult(
     investigationAreas,
     deepDiveFindings,
     dependencies,
+    competitionReadout: result.competitionReadout,
   };
 }

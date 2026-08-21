@@ -104,6 +104,77 @@ describe("fetchNpmVulnerabilities", () => {
         err instanceof UpstreamRateLimitError && err.retryAfter === 30,
     );
   });
+
+  it("filters out advisories that do not affect the queried version", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.osv.dev/v1/query",
+        response: new Response(
+          JSON.stringify({
+            vulns: [
+              {
+                id: "GHSA-old",
+                summary: "Old lodash issue",
+                affected: [
+                  {
+                    ranges: [
+                      {
+                        type: "GIT",
+                        events: [{ introduced: "0" }, { fixed: "4.17.21" }],
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                id: "GHSA-current",
+                summary: "Current lodash issue",
+                affected: [
+                  {
+                    ranges: [
+                      {
+                        type: "GIT",
+                        events: [{ introduced: "4.18.0" }, { fixed: "4.18.2" }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      },
+    ]);
+
+    const cves = await fetchNpmVulnerabilities("lodash", "4.18.1");
+    expect(cves).toHaveLength(1);
+    expect(cves[0].id).toBe("GHSA-current");
+  });
+
+  it("keeps advisories with no version range data", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        url: "https://api.osv.dev/v1/query",
+        response: new Response(
+          JSON.stringify({
+            vulns: [
+              {
+                id: "GHSA-unspecified",
+                summary: "Unspecified range",
+                affected: [{}],
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      },
+    ]);
+
+    const cves = await fetchNpmVulnerabilities("lodash", "4.18.1");
+    expect(cves).toHaveLength(1);
+    expect(cves[0].id).toBe("GHSA-unspecified");
+  });
 });
 
 describe("fetchGitHubCommitForRef", () => {

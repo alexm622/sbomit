@@ -1,8 +1,10 @@
 import {
   computeCacheKey,
+  postProcessAuditResult,
   resolveCodebase,
   resolveLibrary,
   type AuditResult,
+  type CompetitionReadout,
   type LibraryContext,
 } from "./audit";
 import {
@@ -13,7 +15,9 @@ import {
 } from "./db";
 import {
   getLlmConfig,
+  mergeAuditResults,
   runLibraryAudit,
+  type LlmConfig,
   type LlmConfigOverride,
   type LlmInteraction,
 } from "./llm";
@@ -28,13 +32,26 @@ export type AuditStep =
   | "investigate"
   | "deep-dive"
   | "metadata-only"
+  | "judge"
   | "validate"
   | "persist";
+
+export type CompetitionModelStep =
+  | "investigate"
+  | "deep-dive"
+  | "metadata-only";
 
 export type AuditEvent =
   | {
       type: "step";
       step: AuditStep;
+      status: "started" | "completed";
+      detail?: string;
+    }
+  | {
+      type: "competition";
+      model: "A" | "B";
+      step: CompetitionModelStep;
       status: "started" | "completed";
       detail?: string;
     }
@@ -53,6 +70,21 @@ export type AuditEvent =
 
 export type AuditEventHandler = (event: AuditEvent) => void | Promise<void>;
 
+export interface LlmSelection {
+  providerId?: string;
+  provider?: Provider;
+  model?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface CompetitionModeConfig {
+  enabled: true;
+  modelA: LlmSelection;
+  modelB: LlmSelection;
+  mergeModel: LlmSelection;
+}
+
 export interface RunAuditInput {
   libraryUrl: string;
   version?: string;
@@ -62,6 +94,7 @@ export interface RunAuditInput {
   model?: string;
   apiKey?: string;
   baseUrl?: string;
+  competitionMode?: CompetitionModeConfig;
 }
 
 export interface RunAuditResult {
@@ -72,6 +105,95 @@ export interface RunAuditResult {
     reportId: number;
     codebaseInspected: boolean;
     interactions: LlmInteraction[];
+    competitionReadout?: CompetitionReadout | null;
+  };
+}
+
+function parseLlmSelection(
+  value: unknown,
+  label: string,
+): LlmSelection | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const {
+    providerId,
+    provider,
+    model,
+    apiKey,
+    baseUrl,
+  } = value as {
+    providerId?: unknown;
+    provider?: unknown;
+    model?: unknown;
+    apiKey?: unknown;
+    baseUrl?: unknown;
+  };
+  const selection: LlmSelection = {};
+  if (typeof providerId === "string" && providerId.trim()) {
+    selection.providerId = providerId.trim();
+  }
+  if (typeof provider === "string" && provider.trim()) {
+    const trimmed = provider.trim() as Provider;
+    if (!isProvider(trimmed)) {
+      throw new MissingInputError(
+        `${label} provider must be openai, anthropic, or google.`,
+      );
+    }
+    selection.provider = trimmed;
+  }
+  if (typeof model === "string" && model.trim()) {
+    selection.model = model.trim();
+  }
+  if (typeof apiKey === "string" && apiKey.trim()) {
+    selection.apiKey = apiKey.trim();
+  }
+  if (typeof baseUrl === "string" && baseUrl.trim()) {
+    selection.baseUrl = baseUrl.trim();
+  }
+  return Object.keys(selection).length > 0 ? selection : undefined;
+}
+
+function parseCompetitionMode(
+  body: Record<string, unknown>,
+): CompetitionModeConfig | undefined {
+  const competitionMode = body.competitionMode;
+  if (!competitionMode || typeof competitionMode !== "object") {
+    return undefined;
+  }
+  const { enabled, modelA, modelB, mergeModel } = competitionMode as {
+    enabled?: unknown;
+    modelA?: unknown;
+    modelB?: unknown;
+    mergeModel?: unknown;
+  };
+  if (!enabled) return undefined;
+
+  const parsedA = parseLlmSelection(modelA, "modelA");
+  const parsedB = parseLlmSelection(modelB, "modelB");
+  const parsedMerge = parseLlmSelection(mergeModel, "mergeModel");
+
+  if (!parsedA || (!parsedA.providerId && !parsedA.provider)) {
+    throw new MissingInputError(
+      "Competition mode modelA requires providerId or provider.",
+    );
+  }
+  if (!parsedB || (!parsedB.providerId && !parsedB.provider)) {
+    throw new MissingInputError(
+      "Competition mode modelB requires providerId or provider.",
+    );
+  }
+  if (!parsedMerge || (!parsedMerge.providerId && !parsedMerge.provider)) {
+    throw new MissingInputError(
+      "Competition mode mergeModel requires providerId or provider.",
+    );
+  }
+
+  return {
+    enabled: true,
+    modelA: parsedA,
+    modelB: parsedB,
+    mergeModel: parsedMerge,
   };
 }
 
@@ -115,12 +237,12 @@ export function parseRequestBody(body: unknown): RunAuditInput {
         ? version.trim()
         : undefined,
     prompt: typeof prompt === "string" ? prompt : undefined,
+    competitionMode: parseCompetitionMode(body as Record<string, unknown>),
   };
 
   if (typeof providerId === "string" && providerId.trim()) {
     result.providerId = providerId.trim();
   }
-
   if (trimmedProvider) result.provider = trimmedProvider;
   if (typeof model === "string" && model.trim().length > 0) {
     result.model = model.trim();
@@ -151,6 +273,7 @@ function storedReportToResult(report: StoredAuditReport): AuditResult {
     lastPublished: parsed.lastPublished ?? "",
     weeklyDownloads: parsed.weeklyDownloads ?? "",
     cves: parsed.cves ?? [],
+    competitionReadout: parsed.competitionReadout,
   };
 }
 
@@ -209,47 +332,49 @@ async function emitEta(
   });
 }
 
+async function resolveLlmConfig(
+  selection: LlmSelection,
+  db: D1Database,
+): Promise<LlmConfig> {
+  if (selection.providerId) {
+    const providerRow = await getProviderById(db, selection.providerId);
+    if (!providerRow) {
+      throw new MissingInputError(`Provider not found: ${selection.providerId}`);
+    }
+    const dbModels = JSON.parse(providerRow.models) as string[];
+    const override: LlmConfigOverride = {
+      provider: providerRow.provider,
+      apiKey: providerRow.api_key,
+      model: selection.model ?? dbModels[0] ?? undefined,
+      baseUrl: providerRow.base_url ?? undefined,
+    };
+    return getLlmConfig(override);
+  }
+  return getLlmConfig({
+    provider: selection.provider,
+    model: selection.model,
+    apiKey: selection.apiKey,
+    baseUrl: selection.baseUrl,
+  });
+}
+
+function selectionLabel(selection: LlmSelection): string {
+  if (selection.providerId) {
+    return `${selection.providerId}/${selection.model ?? "default"}`;
+  }
+  return `${selection.provider}/${selection.model ?? "default"}`;
+}
+
 export async function runAudit(
   input: RunAuditInput,
   onEvent?: AuditEventHandler,
   db?: D1Database,
 ): Promise<RunAuditResult> {
-  const {
-    libraryUrl,
-    version,
-    prompt,
-    providerId,
-    provider,
-    model,
-    apiKey,
-    baseUrl,
-  } = input;
+  const { libraryUrl, version, prompt, competitionMode } = input;
   const startedAt = Date.now();
+  const isCompetitionMode = competitionMode?.enabled === true;
 
   const dbInstance = db ?? (await getDb());
-
-  let llmOverride: LlmConfigOverride | undefined;
-  if (providerId) {
-    const providerRow = await getProviderById(dbInstance, providerId);
-    if (!providerRow) {
-      throw new MissingInputError(`Provider not found: ${providerId}`);
-    }
-    const dbModels = JSON.parse(providerRow.models) as string[];
-    llmOverride = {
-      provider: providerRow.provider,
-      apiKey: providerRow.api_key,
-      model: model ?? dbModels[0] ?? undefined,
-      baseUrl: providerRow.base_url ?? undefined,
-    };
-  } else if (provider || model || apiKey || baseUrl) {
-    llmOverride = {
-      ...(provider ? { provider } : {}),
-      ...(model ? { model } : {}),
-      ...(apiKey ? { apiKey } : {}),
-      ...(baseUrl ? { baseUrl } : {}),
-    };
-  }
-  const llmConfig = getLlmConfig(llmOverride);
 
   await emitStep(onEvent, "resolve", "started");
   const context = await resolveLibrary(libraryUrl, version);
@@ -282,11 +407,32 @@ export async function runAudit(
         : "metadata only",
   );
 
+  const defaultSelection: LlmSelection = {
+    providerId: input.providerId,
+    provider: input.provider,
+    model: input.model,
+    apiKey: input.apiKey,
+    baseUrl: input.baseUrl,
+  };
+
+  let primaryConfig: LlmConfig;
+  if (isCompetitionMode) {
+    primaryConfig = await resolveLlmConfig(competitionMode.modelA, dbInstance);
+  } else if (
+    defaultSelection.providerId ||
+    defaultSelection.provider ||
+    defaultSelection.model
+  ) {
+    primaryConfig = await resolveLlmConfig(defaultSelection, dbInstance);
+  } else {
+    primaryConfig = getLlmConfig();
+  }
+
   const cacheKey = await computeCacheKey(
     fullContext,
     prompt,
-    llmConfig.provider,
-    llmConfig.model,
+    primaryConfig.provider,
+    primaryConfig.model,
   );
 
   const cached = await getCachedAuditReport(
@@ -306,26 +452,131 @@ export async function runAudit(
         reportId: cached.id,
         codebaseInspected: cached.codebase_inspected === 1,
         interactions,
+        competitionReadout: result.competitionReadout,
       },
     };
   }
 
-  const { result, interactions } = await runLibraryAudit(
-    fullContext,
-    prompt,
-    async (event) => {
-      await onEvent?.(event);
-      if (event.type === "step" && event.status === "completed") {
-        await emitEta(onEvent, startedAt, event.step);
-      }
-    },
-    llmConfig,
-  );
+  let result: AuditResult;
+  let interactions: LlmInteraction[];
+  let model: string;
+
+  if (isCompetitionMode) {
+    const [configA, configB, mergeConfig] = await Promise.all([
+      resolveLlmConfig(competitionMode.modelA, dbInstance),
+      resolveLlmConfig(competitionMode.modelB, dbInstance),
+      resolveLlmConfig(competitionMode.mergeModel, dbInstance),
+    ]);
+
+    await emitStep(onEvent, "investigate", "started");
+    const [{ result: resultA, interactions: interactionsA }, { result: resultB, interactions: interactionsB }] =
+      await Promise.all([
+        runLibraryAudit(
+          fullContext,
+          prompt,
+          async (event) => {
+            // Forward per-model step progress plus LLM and ETA events.
+            if (event.type === "step") {
+              const step: CompetitionModelStep | undefined =
+                event.step === "investigate" || event.step === "deep-dive" || event.step === "metadata-only"
+                  ? event.step
+                  : undefined;
+              if (step) {
+                await onEvent?.({
+                  type: "competition",
+                  model: "A",
+                  step,
+                  status: event.status,
+                  detail: event.detail,
+                });
+              }
+            }
+            if (event.type === "llm" || event.type === "eta") {
+              await onEvent?.(event);
+            }
+          },
+          configA,
+        ),
+        runLibraryAudit(
+          fullContext,
+          prompt,
+          async (event) => {
+            if (event.type === "step") {
+              const step: CompetitionModelStep | undefined =
+                event.step === "investigate" || event.step === "deep-dive" || event.step === "metadata-only"
+                  ? event.step
+                  : undefined;
+              if (step) {
+                await onEvent?.({
+                  type: "competition",
+                  model: "B",
+                  step,
+                  status: event.status,
+                  detail: event.detail,
+                });
+              }
+            }
+            if (event.type === "llm" || event.type === "eta") {
+              await onEvent?.(event);
+            }
+          },
+          configB,
+        ),
+      ]);
+    await emitStep(onEvent, "investigate", "completed");
+    await emitEta(onEvent, startedAt, "investigate");
+
+    await emitStep(onEvent, "judge", "started");
+    const { result: mergedResult, exclusions, interaction: mergeInteraction } =
+      await mergeAuditResults(
+        resultA,
+        resultB,
+        mergeConfig,
+        prompt,
+      );
+    const competitionReadout: CompetitionReadout = {
+      modelA: {
+        provider: configA.provider,
+        model: configA.model,
+        result: resultA,
+      },
+      modelB: {
+        provider: configB.provider,
+        model: configB.model,
+        result: resultB,
+      },
+      judge: {
+        provider: mergeConfig.provider,
+        model: mergeConfig.model,
+      },
+      exclusions,
+    };
+    mergedResult.competitionReadout = competitionReadout;
+    result = postProcessAuditResult(mergedResult, fullContext);
+    interactions = [...interactionsA, ...interactionsB, mergeInteraction];
+    model = `competition: ${selectionLabel(competitionMode.modelA)} + ${selectionLabel(competitionMode.modelB)} → ${selectionLabel(competitionMode.mergeModel)}`;
+    await emitStep(onEvent, "judge", "completed");
+    await emitEta(onEvent, startedAt, "judge");
+  } else {
+    const audit = await runLibraryAudit(
+      fullContext,
+      prompt,
+      async (event) => {
+        await onEvent?.(event);
+        if (event.type === "step" && event.status === "completed") {
+          await emitEta(onEvent, startedAt, event.step);
+        }
+      },
+      primaryConfig,
+    );
+    result = postProcessAuditResult(audit.result, fullContext);
+    interactions = audit.interactions;
+    model = `${primaryConfig.provider}/${primaryConfig.model}`;
+  }
 
   await emitStep(onEvent, "validate", "started");
   const resultJson = JSON.stringify(result);
   const interactionJson = JSON.stringify(interactions);
-  const llmModel = llmConfig.model;
   await emitStep(onEvent, "validate", "completed");
 
   await emitStep(onEvent, "persist", "started");
@@ -335,7 +586,7 @@ export async function runAudit(
     source: fullContext.source,
     url: fullContext.url,
     prompt,
-    model: llmModel,
+    model,
     score: result.score,
     resultJson,
     cacheKey,
@@ -352,6 +603,7 @@ export async function runAudit(
       reportId,
       codebaseInspected,
       interactions,
+      competitionReadout: result.competitionReadout,
     },
   };
 }

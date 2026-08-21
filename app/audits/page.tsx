@@ -25,6 +25,7 @@ import {
   type AuditJob,
 } from "@/app/components/audit-jobs";
 import { ReportView } from "@/app/components/report-view";
+import { CompetitionReadoutView } from "@/app/components/competition-readout";
 import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
 import { Card, CardContent } from "@/app/components/ui/card";
@@ -241,7 +242,9 @@ export default function AuditsPage() {
   );
   const [deletingId, setDeletingId] = React.useState<number | null>(null);
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
-  const [activeTab, setActiveTab] = React.useState<"report" | "log">("report");
+  const [activeTab, setActiveTab] = React.useState<
+    "report" | "competition" | "log"
+  >("report");
   const [loadedReport, setLoadedReport] = React.useState<LoadedReport | null>(
     null,
   );
@@ -706,6 +709,19 @@ export default function AuditsPage() {
                                 >
                                   Report
                                 </Button>
+                                {report.result.competitionReadout && (
+                                  <Button
+                                    variant={
+                                      activeTab === "competition"
+                                        ? "default"
+                                        : "ghost"
+                                    }
+                                    size="sm"
+                                    onClick={() => setActiveTab("competition")}
+                                  >
+                                    Competition
+                                  </Button>
+                                )}
                                 <Button
                                   variant={
                                     activeTab === "log" ? "default" : "ghost"
@@ -718,6 +734,11 @@ export default function AuditsPage() {
                               </div>
                               {activeTab === "report" ? (
                                 <ReportView result={report.result} />
+                              ) : activeTab === "competition" ? (
+                                <CompetitionReadoutView
+                                  result={report.result}
+                                  configs={[]}
+                                />
                               ) : report.interactions.length > 0 ? (
                                 <InteractionsLogView
                                   interactions={report.interactions}
