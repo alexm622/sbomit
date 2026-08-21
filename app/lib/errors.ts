@@ -12,7 +12,10 @@ export type ErrorCode =
   | "BAD_REQUEST"
   | "NOT_FOUND"
   | "RATE_LIMITED"
-  | "UPSTREAM_ERROR";
+  | "UPSTREAM_ERROR"
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "CONFLICT";
 
 export class AuditError extends Error {
   code: ErrorCode;

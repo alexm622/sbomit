@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { POST } from "./route";
 
+vi.mock("@/app/lib/db", () => ({
+  getDb: vi.fn(() => Promise.resolve({} as D1Database)),
+}));
+
+vi.mock("@/app/lib/auth", () => ({
+  requireAdmin: vi.fn(() =>
+    Promise.resolve({ id: 1, username: "admin", email: "admin@example.com", fullName: "Admin", isAdmin: true }),
+  ),
+}));
+
 function mockFetch(response: Response | (() => Response)) {
   return vi.fn(async () =>
     typeof response === "function" ? response() : response,

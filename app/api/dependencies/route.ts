@@ -8,6 +8,7 @@ import {
   MissingInputError,
   isAuditError,
 } from "@/app/lib/errors";
+import { requireAuth } from "@/app/lib/auth";
 
 interface DependencyTreeResponse {
   auditId: number;
@@ -74,6 +75,7 @@ export async function POST(request: Request) {
     }
 
     const db = await getDb();
+    const user = await requireAuth(db, request);
     const context = await resolveLibrary(libraryUrl.trim());
     const dependencies = extractDependencies(context);
 
@@ -84,6 +86,7 @@ export async function POST(request: Request) {
         version: context.version,
         source: context.source,
         url: context.url,
+        userId: user.id,
       },
       dependencies,
     );

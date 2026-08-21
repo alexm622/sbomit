@@ -4,5 +4,8 @@
 # Required: OpenAI API key for AI-powered audits
 OPENAI_API_KEY=sk-your-openai-api-key-here
 
+# Required: Secret used to sign session cookies (generate a strong random value)
+AUTH_SECRET=replace-with-a-long-random-secret
+
 # Optional: GitHub personal access token for higher rate limits and deeper signals
 GITHUB_TOKEN=ghp-your-github-token-here

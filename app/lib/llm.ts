@@ -88,6 +88,7 @@ export interface LlmConfig {
   apiKey: string;
   model: string;
   baseUrl?: string;
+  providerId?: string;
 }
 
 export interface LlmConfigOverride {
@@ -95,10 +96,12 @@ export interface LlmConfigOverride {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  providerId?: string;
 }
 
 export interface LlmInteraction {
-  provider: Provider;
+  provider: string;
+  providerId?: string;
   model: string;
   systemPrompt: string;
   userPrompt: string;
@@ -245,6 +248,55 @@ export function getLlmConfig(override?: LlmConfigOverride): LlmConfig {
   }
 }
 
+// Return a more specific provider name for OpenAI-compatible endpoints.
+// This prevents Moonshot, DeepSeek, etc. from being lumped under "openai"
+// in usage analytics.
+function inferProvider(config: LlmConfig): string {
+  const baseUrl = config.baseUrl?.toLowerCase() ?? "";
+  const model = config.model.toLowerCase();
+
+  if (
+    baseUrl.includes("moonshot") ||
+    model.includes("moonshot") ||
+    model.includes("kimi")
+  ) {
+    return "moonshot";
+  }
+  if (baseUrl.includes("deepseek") || model.includes("deepseek")) {
+    return "deepseek";
+  }
+  if (baseUrl.includes("openrouter") || baseUrl.includes("openrouter.ai")) {
+    return "openrouter";
+  }
+  if (baseUrl.includes("together") || baseUrl.includes("together.xyz")) {
+    return "together";
+  }
+  if (baseUrl.includes("fireworks") || baseUrl.includes("fireworks.ai")) {
+    return "fireworks";
+  }
+  if (baseUrl.includes("groq") || baseUrl.includes("groq.com")) {
+    return "groq";
+  }
+  if (baseUrl.includes("perplexity") || baseUrl.includes("perplexity.ai")) {
+    return "perplexity";
+  }
+  if (baseUrl.includes("openai") || baseUrl.includes("openai.com")) {
+    return "openai";
+  }
+  if (baseUrl.includes("anthropic") || baseUrl.includes("anthropic.com")) {
+    return "anthropic";
+  }
+  if (
+    baseUrl.includes("google") ||
+    baseUrl.includes("googleapis") ||
+    baseUrl.includes("generativelanguage")
+  ) {
+    return "google";
+  }
+
+  return config.provider;
+}
+
 function parseRetryAfter(headers: Headers): number | undefined {
   const value = headers.get("retry-after");
   if (!value) return undefined;
@@ -358,7 +410,8 @@ async function runOpenAiStructured<T>(
   }
 
   const interaction: LlmInteraction = {
-    provider: "openai",
+    provider: inferProvider(config),
+    providerId: config.providerId,
     model: config.model,
     systemPrompt,
     userPrompt: content,
@@ -438,6 +491,7 @@ async function runAnthropicStructured<T>(
 
   const interaction: LlmInteraction = {
     provider: "anthropic",
+    providerId: config.providerId,
     model: config.model,
     systemPrompt,
     userPrompt: content,
@@ -513,6 +567,7 @@ async function runGoogleStructured<T>(
 
   const interaction: LlmInteraction = {
     provider: "google",
+    providerId: config.providerId,
     model: config.model,
     systemPrompt,
     userPrompt: content,

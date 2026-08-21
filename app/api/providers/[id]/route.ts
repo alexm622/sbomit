@@ -6,6 +6,7 @@ import {
 } from "@/app/lib/db";
 import { isProvider } from "@/app/lib/providers";
 import { AuditError, handleApiError, MissingInputError } from "@/app/lib/errors";
+import { requireAuth, requireAdmin } from "@/app/lib/auth";
 
 function parseModels(value: unknown): string[] | undefined {
   if (Array.isArray(value)) {
@@ -47,12 +48,13 @@ function publicProvider(provider: {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   try {
     const { id } = await params;
     const db = await getDb();
+    await requireAuth(db, request);
     const provider = await getProviderById(db, id);
     if (!provider) {
       return handleApiError(
@@ -135,6 +137,7 @@ export async function PUT(
     }
 
     const db = await getDb();
+    await requireAdmin(db, request);
     const updated = await updateProvider(db, id, patch);
     if (!updated) {
       return Response.json(
@@ -150,12 +153,13 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   try {
     const { id } = await params;
     const db = await getDb();
+    await requireAdmin(db, request);
     const deleted = await deleteProvider(db, id);
     if (!deleted) {
       return Response.json(

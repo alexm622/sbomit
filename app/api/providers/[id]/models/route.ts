@@ -1,14 +1,16 @@
 import { getDb, getProviderById } from "@/app/lib/db";
 import { fetchModelsForProvider } from "@/app/lib/llm-models";
 import { AuditError, handleApiError } from "@/app/lib/errors";
+import { requireAdmin } from "@/app/lib/auth";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   try {
     const { id } = await params;
     const db = await getDb();
+    await requireAdmin(db, request);
     const provider = await getProviderById(db, id);
     if (!provider) {
       return handleApiError(

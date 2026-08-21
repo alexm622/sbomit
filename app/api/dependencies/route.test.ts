@@ -3,18 +3,30 @@ import { env } from "cloudflare:workers";
 import { reset } from "cloudflare:test";
 import { POST } from "./route";
 
-vi.mock("@/app/lib/db", () => ({
-  getDb: vi.fn(() => Promise.resolve(env.DB)),
-  saveDependencyTree: vi.fn(async (_db: D1Database, audit: { name: string; version: string; source: string; url: string }) => {
-    const insertAudit = env.DB
-      .prepare("INSERT INTO package_audits (name, version, source, url) VALUES (?, ?, ?, ?)")
-      .bind(audit.name, audit.version, audit.source, audit.url);
-    const result = await insertAudit.run<{ id: number }>();
-    return result.meta?.last_row_id as number;
-  }),
+vi.mock("@/app/lib/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/app/lib/db")>();
+  return {
+    ...actual,
+    getDb: vi.fn(() => Promise.resolve(env.DB)),
+  };
+});
+
+vi.mock("@/app/lib/auth", () => ({
+  requireAuth: vi.fn(() =>
+    Promise.resolve({ id: 1, username: "tester", email: "tester@example.com", fullName: "Tester", isAdmin: false }),
+  ),
 }));
 
 async function setupSchema(db: D1Database) {
+  await db.exec("DROP TABLE IF EXISTS package_dependencies");
+  await db.exec("DROP TABLE IF EXISTS package_audits");
+  await db.exec("DROP TABLE IF EXISTS users");
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS users (` +
+      `id INTEGER PRIMARY KEY AUTOINCREMENT` +
+      `);`,
+  );
+  await db.exec("INSERT OR IGNORE INTO users (id) VALUES (1)");
   await db.exec(
     `CREATE TABLE IF NOT EXISTS package_audits (` +
       `id INTEGER PRIMARY KEY AUTOINCREMENT,` +
@@ -22,6 +34,7 @@ async function setupSchema(db: D1Database) {
       `version TEXT NOT NULL,` +
       `source TEXT NOT NULL,` +
       `url TEXT NOT NULL,` +
+      `user_id INTEGER,` +
       `audited_at DATETIME DEFAULT CURRENT_TIMESTAMP` +
       `);`,
   );
@@ -31,8 +44,7 @@ async function setupSchema(db: D1Database) {
       `audit_id INTEGER NOT NULL,` +
       `name TEXT NOT NULL,` +
       `version TEXT NOT NULL,` +
-      `dependency_type TEXT NOT NULL,` +
-      `FOREIGN KEY (audit_id) REFERENCES package_audits(id) ON DELETE CASCADE` +
+      `dependency_type TEXT NOT NULL` +
       `);`,
   );
 }

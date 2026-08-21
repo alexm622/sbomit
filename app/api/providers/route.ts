@@ -1,6 +1,7 @@
 import { getDb, listProviders, createProvider } from "@/app/lib/db";
 import { isProvider } from "@/app/lib/providers";
 import { handleApiError, MissingInputError } from "@/app/lib/errors";
+import { requireAuth, requireAdmin } from "@/app/lib/auth";
 
 function parseModels(value: unknown): string[] | undefined {
   if (Array.isArray(value)) {
@@ -41,9 +42,10 @@ function publicProvider(provider: {
   };
 }
 
-export async function GET(): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
   try {
     const db = await getDb();
+    await requireAuth(db, request);
     const providers = await listProviders(db);
     return Response.json({ providers: providers.map(publicProvider) });
   } catch (error) {
@@ -85,6 +87,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const db = await getDb();
+    await requireAdmin(db, request);
     const id = await createProvider(db, {
       name: name.trim(),
       provider,

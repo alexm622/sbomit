@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   CheckCircle2,
@@ -33,6 +34,7 @@ import {
   type Provider,
   type ProviderConfig,
 } from "@/app/lib/providers";
+import { useAuth } from "@/app/lib/use-auth";
 
 function ConfigEditor({
   config,
@@ -399,6 +401,8 @@ function ConfigEditor({
 }
 
 export default function SettingsPage() {
+  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const {
     configs,
     selectedId,
@@ -409,6 +413,20 @@ export default function SettingsPage() {
     updateConfig,
     removeConfig,
   } = useProviderConfigs();
+
+  React.useEffect(() => {
+    if (!authLoading && (!user || !user.isAdmin)) {
+      router.replace("/");
+    }
+  }, [authLoading, user, router]);
+
+  if (authLoading || !user?.isAdmin) {
+    return (
+      <div className="flex min-h-full flex-col items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-full flex-col bg-background">

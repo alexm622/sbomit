@@ -1,6 +1,8 @@
 import { isProvider } from "@/app/lib/providers";
 import { fetchModelsForProvider } from "@/app/lib/llm-models";
 import { handleApiError } from "@/app/lib/errors";
+import { getDb } from "@/app/lib/db";
+import { requireAdmin } from "@/app/lib/auth";
 
 interface ModelsRequest {
   provider?: unknown;
@@ -50,6 +52,8 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
+    const db = await getDb();
+    await requireAdmin(db, request);
     const models = await fetchModelsForProvider(
       provider,
       typeof apiKey === "string" ? apiKey : undefined,

@@ -569,8 +569,63 @@ export default function AuditsPage() {
             )}
 
             {history !== null && history.length > 0 && (
-              <div className="space-y-3">
-                {history.map((item) => {
+              <>
+                <Card className="mb-4">
+                  <CardContent className="py-4">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      <div>
+                        <div className="text-xs text-muted-foreground">
+                          Audits
+                        </div>
+                        <div className="text-xl font-semibold">
+                          {history.length}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">
+                          Total tokens
+                        </div>
+                        <div className="text-xl font-semibold">
+                          {history
+                            .reduce(
+                              (sum, item) => sum + (item.tokens_total ?? 0),
+                              0,
+                            )
+                            .toLocaleString()}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">
+                          Input tokens
+                        </div>
+                        <div className="text-xl font-semibold">
+                          {history
+                            .reduce(
+                              (sum, item) => sum + (item.tokens_input ?? 0),
+                              0,
+                            )
+                            .toLocaleString()}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">
+                          Output tokens
+                        </div>
+                        <div className="text-xl font-semibold">
+                          {history
+                            .reduce(
+                              (sum, item) => sum + (item.tokens_output ?? 0),
+                              0,
+                            )
+                            .toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <div className="space-y-3">
+                  {history.map((item) => {
                   const isExpanded = expandedId === item.id;
                   const report =
                     loadedReport?.reportId === item.id
@@ -755,7 +810,8 @@ export default function AuditsPage() {
                     </Card>
                   );
                 })}
-              </div>
+                </div>
+              </>
             )}
           </div>
         </section>
