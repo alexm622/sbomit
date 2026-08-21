@@ -33,6 +33,8 @@ export interface AuditJob {
   currentStep?: AuditStep;
   completedSteps?: AuditStep[];
   tokensPerSecond?: number;
+  tokensInput?: number;
+  tokensOutput?: number;
   lastLlmPhase?: string;
   estimatedFinishAt?: number;
   downloadDetail?: string;
@@ -232,10 +234,14 @@ export function AuditJobsProvider({
                   };
                 });
               } else if (event.type === "llm") {
-                updateJob(jobId, {
+                updateJob(jobId, (prev) => ({
                   tokensPerSecond: event.tokensPerSecond,
+                  tokensInput:
+                    (prev.tokensInput ?? 0) + (event.tokensInput ?? 0),
+                  tokensOutput:
+                    (prev.tokensOutput ?? 0) + (event.tokensOutput ?? 0),
                   lastLlmPhase: event.phase,
-                });
+                }));
               } else if (event.type === "eta") {
                 updateJob(jobId, {
                   estimatedFinishAt: event.estimatedFinishAt,

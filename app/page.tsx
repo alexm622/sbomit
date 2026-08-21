@@ -156,6 +156,18 @@ function normalizeUrl(value: string): string {
   return trimmed;
 }
 
+function aggregateTokens(
+  interactions: Array<{ tokensInput?: number | null; tokensOutput?: number | null }>,
+): { input: number; output: number } {
+  let input = 0;
+  let output = 0;
+  for (const interaction of interactions) {
+    if (interaction.tokensInput != null) input += interaction.tokensInput;
+    if (interaction.tokensOutput != null) output += interaction.tokensOutput;
+  }
+  return { input, output };
+}
+
 function isNpmPackageInput(value: string): boolean {
   const trimmed = value.trim();
   if (looksLikePackageName(trimmed)) return true;
@@ -1202,6 +1214,15 @@ export default function Home() {
                             {activeJob.tokensPerSecond.toLocaleString()} tok/s
                           </span>
                         )}
+                      {(activeJob.tokensInput ?? 0) + (activeJob.tokensOutput ?? 0) > 0 && (
+                        <span className="rounded-full bg-muted px-2 py-1">
+                          {(
+                            (activeJob.tokensInput ?? 0) +
+                            (activeJob.tokensOutput ?? 0)
+                          ).toLocaleString()}{" "}
+                          tokens
+                        </span>
+                      )}
                       {activeJob.estimatedFinishAt !== undefined && (
                         <span className="rounded-full bg-muted px-2 py-1">
                           ETA{" "}
@@ -1425,8 +1446,8 @@ export default function Home() {
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="overview" className="space-y-6">
-                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+                <TabsContent value="overview" className="space-y-6">
+                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-5">
                   <Card>
                     <CardHeader className="pb-3">
                       <CardDescription>Trust Score</CardDescription>
@@ -1487,6 +1508,58 @@ export default function Home() {
                         {result.license.compatible
                           ? "Compatible"
                           : "Review required"}
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardDescription>Tokens used</CardDescription>
+                      <CardTitle className="text-2xl">
+                        {(() => {
+                          const fromJob =
+                            (activeJob?.tokensInput ?? 0) +
+                            (activeJob?.tokensOutput ?? 0);
+                          if (fromJob > 0) return fromJob.toLocaleString();
+                          const fromInteractions = aggregateTokens(
+                            activeJob?.interactions ?? [],
+                          );
+                          return (
+                            fromInteractions.input + fromInteractions.output
+                          ).toLocaleString();
+                        })()}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm text-muted-foreground">
+                        {(() => {
+                          const fromJob = {
+                            input: activeJob?.tokensInput ?? 0,
+                            output: activeJob?.tokensOutput ?? 0,
+                          };
+                          const fromInteractions = aggregateTokens(
+                            activeJob?.interactions ?? [],
+                          );
+                          const input =
+                            fromJob.input > 0
+                              ? fromJob.input
+                              : fromInteractions.input;
+                          const output =
+                            fromJob.output > 0
+                              ? fromJob.output
+                              : fromInteractions.output;
+                          if (input === 0 && output === 0) {
+                            return "Not reported by provider";
+                          }
+                          return [
+                            input > 0 ? `${input.toLocaleString()} in` : null,
+                            output > 0
+                              ? `${output.toLocaleString()} out`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" / ");
+                        })()}
                       </p>
                     </CardContent>
                   </Card>

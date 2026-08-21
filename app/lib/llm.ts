@@ -305,6 +305,10 @@ interface AnthropicToolUseBlock {
 
 interface AnthropicMessageResponse {
   content: AnthropicToolUseBlock[];
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
 }
 
 interface GeminiResponse {
@@ -313,6 +317,11 @@ interface GeminiResponse {
       parts?: Array<{ text?: string }>;
     };
   }>;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
 }
 
 async function runOpenAiStructured<T>(
@@ -436,6 +445,8 @@ async function runAnthropicStructured<T>(
     response: data,
     startedAt,
     finishedAt,
+    tokensInput: data.usage?.input_tokens,
+    tokensOutput: data.usage?.output_tokens,
   };
 
   return { parsed: schema.parse(toolUse.input), interaction };
@@ -509,6 +520,8 @@ async function runGoogleStructured<T>(
     response: data,
     startedAt,
     finishedAt,
+    tokensInput: data.usageMetadata?.promptTokenCount,
+    tokensOutput: data.usageMetadata?.candidatesTokenCount,
   };
 
   return { parsed: schema.parse(JSON.parse(text)), interaction };
