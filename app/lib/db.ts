@@ -73,69 +73,6 @@ export interface StoredAuditReportSummary {
   codebase_inspected: number;
 }
 
-export interface StoredRisk {
-  id: number;
-  report_id: number;
-  severity: string;
-  title: string;
-  description: string;
-}
-
-export interface StoredCve {
-  id: number;
-  report_id: number;
-  cve_id: string;
-  aliases: string | null;
-  severity: string | null;
-  title: string;
-  description: string;
-  published: string | null;
-  modified: string | null;
-  fixed_version: string | null;
-  references_json: string | null;
-}
-
-export interface StoredFinding {
-  id: number;
-  report_id: number;
-  area: string;
-  file: string;
-  issue: string;
-  evidence: string | null;
-  severity: string;
-}
-
-export interface StoredInvestigationArea {
-  id: number;
-  report_id: number;
-  area: string;
-  rationale: string;
-}
-
-export interface StoredInvestigationFile {
-  id: number;
-  area_id: number;
-  file: string;
-}
-
-export interface StoredReportDependency {
-  id: number;
-  report_id: number;
-  name: string;
-  version: string;
-  license: string;
-  transitive: number;
-}
-
-export interface StoredReportFindings {
-  risks: StoredRisk[];
-  cves: StoredCve[];
-  findings: StoredFinding[];
-  investigationAreas: StoredInvestigationArea[];
-  investigationFiles: StoredInvestigationFile[];
-  dependencies: StoredReportDependency[];
-}
-
 export async function getDb(env?: Record<string, unknown>): Promise<D1Database> {
   if (env) {
     const db = env.DB as D1Database | undefined;
@@ -211,14 +148,6 @@ export async function getProviderById(
   return db
     .prepare("SELECT * FROM providers WHERE id = ? LIMIT 1")
     .bind(id)
-    .first<StoredProvider>();
-}
-
-export async function getDefaultProvider(
-  db: D1Database,
-): Promise<StoredProvider | null> {
-  return db
-    .prepare("SELECT * FROM providers WHERE is_default = 1 LIMIT 1")
     .first<StoredProvider>();
 }
 
@@ -579,16 +508,6 @@ export async function getAuditById(
     .first<StoredAudit>();
 }
 
-export async function getAuditByUrl(
-  db: D1Database,
-  url: string,
-): Promise<StoredAudit | null> {
-  return db
-    .prepare("SELECT * FROM package_audits WHERE url = ? LIMIT 1")
-    .bind(url)
-    .first<StoredAudit>();
-}
-
 export async function getAuditReportById(
   db: D1Database,
   id: number,
@@ -596,16 +515,6 @@ export async function getAuditReportById(
   return db
     .prepare("SELECT * FROM audit_reports WHERE id = ? LIMIT 1")
     .bind(id)
-    .first<StoredAuditReport>();
-}
-
-export async function getAuditReportByAuditId(
-  db: D1Database,
-  auditId: number,
-): Promise<StoredAuditReport | null> {
-  return db
-    .prepare("SELECT * FROM audit_reports WHERE audit_id = ? LIMIT 1")
-    .bind(auditId)
     .first<StoredAuditReport>();
 }
 
@@ -676,154 +585,6 @@ export async function deleteAuditReport(
   return true;
 }
 
-export async function getDependenciesByAuditId(
-  db: D1Database,
-  auditId: number,
-): Promise<StoredDependency[]> {
-  const result = await db
-    .prepare(
-      "SELECT name, version, dependency_type FROM package_dependencies WHERE audit_id = ?",
-    )
-    .bind(auditId)
-    .all<StoredDependency>();
-  return result.results || [];
-}
-
-export async function getRisksByReportId(
-  db: D1Database,
-  reportId: number,
-): Promise<StoredRisk[]> {
-  const result = await db
-    .prepare("SELECT * FROM audit_risks WHERE report_id = ? ORDER BY id")
-    .bind(reportId)
-    .all<StoredRisk>();
-  return result.results || [];
-}
-
-export async function getCvesByReportId(
-  db: D1Database,
-  reportId: number,
-): Promise<StoredCve[]> {
-  const result = await db
-    .prepare("SELECT * FROM audit_cves WHERE report_id = ? ORDER BY id")
-    .bind(reportId)
-    .all<StoredCve>();
-  return result.results || [];
-}
-
-export async function getFindingsByReportId(
-  db: D1Database,
-  reportId: number,
-): Promise<StoredFinding[]> {
-  const result = await db
-    .prepare("SELECT * FROM audit_findings WHERE report_id = ? ORDER BY id")
-    .bind(reportId)
-    .all<StoredFinding>();
-  return result.results || [];
-}
-
-export async function getInvestigationAreasByReportId(
-  db: D1Database,
-  reportId: number,
-): Promise<StoredInvestigationArea[]> {
-  const result = await db
-    .prepare(
-      "SELECT * FROM audit_investigation_areas WHERE report_id = ? ORDER BY id",
-    )
-    .bind(reportId)
-    .all<StoredInvestigationArea>();
-  return result.results || [];
-}
-
-export async function getInvestigationFilesByAreaId(
-  db: D1Database,
-  areaId: number,
-): Promise<StoredInvestigationFile[]> {
-  const result = await db
-    .prepare(
-      "SELECT * FROM audit_investigation_files WHERE area_id = ? ORDER BY id",
-    )
-    .bind(areaId)
-    .all<StoredInvestigationFile>();
-  return result.results || [];
-}
-
-export async function getReportDependenciesByReportId(
-  db: D1Database,
-  reportId: number,
-): Promise<StoredReportDependency[]> {
-  const result = await db
-    .prepare(
-      "SELECT * FROM audit_report_dependencies WHERE report_id = ? ORDER BY id",
-    )
-    .bind(reportId)
-    .all<StoredReportDependency>();
-  return result.results || [];
-}
-
-export async function getAuditReportFindings(
-  db: D1Database,
-  reportId: number,
-): Promise<StoredReportFindings> {
-  const [risks, cves, findings, investigationAreas, dependencies] =
-    await Promise.all([
-      getRisksByReportId(db, reportId),
-      getCvesByReportId(db, reportId),
-      getFindingsByReportId(db, reportId),
-      getInvestigationAreasByReportId(db, reportId),
-      getReportDependenciesByReportId(db, reportId),
-    ]);
-
-  const areaIds = investigationAreas.map((a) => a.id);
-  const investigationFiles =
-    areaIds.length > 0
-      ? await db
-          .prepare(
-            `SELECT * FROM audit_investigation_files WHERE area_id IN (${areaIds.map(() => "?").join(", ")}) ORDER BY id`,
-          )
-          .bind(...areaIds)
-          .all<StoredInvestigationFile>()
-          .then((r) => r.results || [])
-      : [];
-
-  return {
-    risks,
-    cves,
-    findings,
-    investigationAreas,
-    investigationFiles,
-    dependencies,
-  };
-}
-
-export async function saveReport(
-  db: D1Database,
-  auditId: number,
-  report: {
-    publicId: string;
-    prompt?: string;
-    model: string;
-    score: number;
-    resultJson: string;
-  },
-): Promise<string> {
-  await db
-    .prepare(
-      `INSERT INTO audit_reports (audit_id, public_id, prompt, model, score, result_json)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      auditId,
-      report.publicId,
-      report.prompt ?? null,
-      report.model,
-      report.score,
-      report.resultJson,
-    )
-    .run();
-  return report.publicId;
-}
-
 export async function getReportByPublicId(
   db: D1Database,
   publicId: string,
@@ -832,24 +593,6 @@ export async function getReportByPublicId(
     .prepare("SELECT * FROM audit_reports WHERE public_id = ? LIMIT 1")
     .bind(publicId)
     .first<StoredReport>();
-}
-
-export async function getRecentReportByUrl(
-  db: D1Database,
-  url: string,
-  ttlHours: number,
-): Promise<StoredReport | null> {
-  const result = await db
-    .prepare(
-      `SELECT r.* FROM audit_reports r
-       JOIN package_audits a ON r.audit_id = a.id
-       WHERE a.url = ? AND r.created_at > datetime('now', ?)
-       ORDER BY r.created_at DESC
-       LIMIT 1`,
-    )
-    .bind(url, `-${ttlHours} hours`)
-    .first<StoredReport>();
-  return result || null;
 }
 
 // ---------------------------------------------------------------------------

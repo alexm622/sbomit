@@ -1,4 +1,4 @@
-import { AppError, handleApiError } from "@/app/lib/errors";
+import { AuditError, handleApiError } from "@/app/lib/errors";
 import { getDb, getReportByPublicId } from "@/app/lib/db";
 import { auditResultSchema, type AuditResult } from "@/app/lib/audit";
 import { checkRateLimit } from "@/app/lib/rate-limit";
@@ -32,20 +32,20 @@ export async function GET(
 
     const { id } = await params;
     if (!id) {
-      throw new AppError("BAD_REQUEST", "Report ID is required.", 400);
+      throw new AuditError("BAD_REQUEST", "Report ID is required.", 400);
     }
 
     const db = await getDb();
     const report = await getReportByPublicId(db, id);
     if (!report) {
-      throw new AppError("NOT_FOUND", "Report not found.", 404);
+      throw new AuditError("NOT_FOUND", "Report not found.", 404);
     }
 
     let result: AuditResult;
     try {
       result = auditResultSchema.parse(JSON.parse(report.result_json));
     } catch {
-      throw new AppError(
+      throw new AuditError(
         "INTERNAL_ERROR",
         "Stored report is corrupted.",
         500,

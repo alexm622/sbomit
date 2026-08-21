@@ -21,8 +21,6 @@ import {
 import type { AuditEventHandler, AuditStep } from "./run-audit";
 import { type Provider, isProvider } from "./providers";
 
-export type { Provider };
-
 function coerceStringToArray<T>(
   value: unknown,
   parser: (item: unknown) => T | undefined,
@@ -50,27 +48,6 @@ const investigationAreaItemSchema = z.object({
   rationale: z.string().default(""),
   files: z.array(z.string()).default([]),
 });
-
-export const PROVIDERS: { value: Provider; label: string }[] = [
-  { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "google", label: "Google" },
-];
-
-export interface CompetitionModelConfig {
-  provider: Provider;
-  model: string;
-}
-
-export const MODEL_SUGGESTIONS: Record<Provider, string[]> = {
-  openai: ["gpt-4o-mini", "gpt-4o", "o1-mini", "o3-mini"],
-  anthropic: [
-    "claude-3-5-sonnet-20241022",
-    "claude-3-opus-20240229",
-    "claude-3-haiku-20240307",
-  ],
-  google: ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest"],
-};
 
 const investigationSchema = z.object({
   investigationAreas: z.preprocess(

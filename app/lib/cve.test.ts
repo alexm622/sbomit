@@ -2,8 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   fetchNpmVulnerabilities,
   fetchGitHubVulnerabilities,
-  fetchGitHubCommitForRef,
-  cveToText,
 } from "./cve";
 import { UpstreamRateLimitError } from "./errors";
 
@@ -177,45 +175,6 @@ describe("fetchNpmVulnerabilities", () => {
   });
 });
 
-describe("fetchGitHubCommitForRef", () => {
-  let originalFetch: typeof fetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
-  });
-
-  it("returns the commit sha for a ref", async () => {
-    globalThis.fetch = mockFetch([
-      {
-        url: /api\.github\.com\/repos\/facebook\/react\/commits\/v18\.0\.0/,
-        response: new Response(JSON.stringify({ sha: "abc123" }), {
-          status: 200,
-        }),
-      },
-    ]);
-
-    const sha = await fetchGitHubCommitForRef("facebook", "react", "v18.0.0");
-    expect(sha).toBe("abc123");
-  });
-
-  it("returns undefined when the ref is not found", async () => {
-    globalThis.fetch = mockFetch([
-      {
-        url: /api\.github\.com/,
-        response: new Response("Not Found", { status: 404 }),
-      },
-    ]);
-
-    const sha = await fetchGitHubCommitForRef("facebook", "react", "missing");
-    expect(sha).toBeUndefined();
-  });
-});
-
 describe("fetchGitHubVulnerabilities", () => {
   let originalFetch: typeof fetch;
 
@@ -254,27 +213,4 @@ describe("fetchGitHubVulnerabilities", () => {
   });
 });
 
-describe("cveToText", () => {
-  it("formats CVEs as a readable list", () => {
-    const text = cveToText([
-      {
-        id: "CVE-2021-12345",
-        aliases: [],
-        severity: "high",
-        title: "Prototype pollution",
-        description: "Details",
-        published: null,
-        modified: null,
-        fixedVersion: "4.17.21",
-        references: [],
-      },
-    ]);
-    expect(text).toContain("CVE-2021-12345");
-    expect(text).toContain("high");
-    expect(text).toContain("fixed in 4.17.21");
-  });
 
-  it("returns a friendly message when there are no CVEs", () => {
-    expect(cveToText([])).toContain("No known CVEs");
-  });
-});

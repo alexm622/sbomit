@@ -1,4 +1,4 @@
-import { AppError, handleApiError } from "@/app/lib/errors";
+import { AuditError, handleApiError } from "@/app/lib/errors";
 import { resolveTransitiveDependencies } from "@/app/lib/dependencies";
 import { checkRateLimit } from "@/app/lib/rate-limit";
 import { z } from "zod";
@@ -37,12 +37,12 @@ export async function POST(request: Request) {
     try {
       body = await request.json();
     } catch {
-      throw new AppError("BAD_REQUEST", "Invalid JSON body.", 400);
+      throw new AuditError("BAD_REQUEST", "Invalid JSON body.", 400);
     }
 
     const parsed = requestSchema.safeParse(body);
     if (!parsed.success) {
-      throw new AppError(
+      throw new AuditError(
         "BAD_REQUEST",
         parsed.error.issues.map((e) => e.message).join("; "),
         400,

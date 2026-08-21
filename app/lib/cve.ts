@@ -244,12 +244,12 @@ export async function fetchNpmVulnerabilities(
     .map(normalizeOsvVulnerability);
 }
 
-export async function fetchGitHubCommitForRef(
+export async function fetchGitHubVulnerabilities(
   owner: string,
   repo: string,
   ref: string,
-): Promise<string | undefined> {
-  const res = await fetch(
+): Promise<Cve[]> {
+  const commitRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/commits/${ref}`,
     {
       headers: {
@@ -258,19 +258,11 @@ export async function fetchGitHubCommitForRef(
       },
     },
   );
-  if (!res.ok) {
-    return undefined;
+  if (!commitRes.ok) {
+    return [];
   }
-  const data = (await res.json()) as { sha?: string };
-  return data.sha;
-}
-
-export async function fetchGitHubVulnerabilities(
-  owner: string,
-  repo: string,
-  ref: string,
-): Promise<Cve[]> {
-  const commit = await fetchGitHubCommitForRef(owner, repo, ref);
+  const commitData = (await commitRes.json()) as { sha?: string };
+  const commit = commitData.sha;
   if (!commit) {
     return [];
   }
@@ -297,15 +289,4 @@ export async function fetchGitHubVulnerabilities(
   return (data.vulns ?? []).map(normalizeOsvVulnerability);
 }
 
-export function cveToText(cves: Cve[]): string {
-  if (cves.length === 0) {
-    return "No known CVEs or security advisories were found for this version.";
-  }
-  return cves
-    .map(
-      (cve) =>
-        `- ${cve.id} (${cve.severity ?? "unknown"}): ${cve.title}` +
-        (cve.fixedVersion ? ` (fixed in ${cve.fixedVersion})` : ""),
-    )
-    .join("\n");
-}
+

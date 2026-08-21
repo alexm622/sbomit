@@ -123,8 +123,6 @@ export function isAuditError(error: unknown): error is AuditError {
   return error instanceof AuditError;
 }
 
-export { AuditError as AppError };
-
 export function errorResponse(error: AuditError): Response {
   return Response.json(
     { error: error.message, code: error.code, ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}) },

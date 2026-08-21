@@ -10,7 +10,6 @@ import {
   buildCodebaseSnapshot,
   fetchGitHubTarball,
   fetchNpmTarball,
-  formatSnapshotForLlm,
   sourceTokenBudget,
 } from "./codebase";
 import type { Cve } from "./cve";
@@ -553,11 +552,6 @@ export async function resolveCodebase(
     );
     return undefined;
   }
-}
-
-export function buildCodebasePrompt(context: LibraryContext): string {
-  if (!context.codebase) return "";
-  return formatSnapshotForLlm(context.codebase);
 }
 
 export function postProcessAuditResult(
