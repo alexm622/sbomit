@@ -47,9 +47,11 @@ and typed errors.
          advisories)          license, activity)   completion)
                                    │
                                    ▼
-                          Cloudflare D1
-                  (package_audits, package_dependencies,
-                   audit_reports [planned])
+                           Cloudflare D1
+                   (package_audits, package_dependencies,
+                    audit_reports, llm_interactions, findings,
+                    rate_limits, providers, users, sessions,
+                    password_reset_tokens, provider_limits, provider_usage)
 ```
 
 ---
@@ -66,8 +68,8 @@ and typed errors.
   `https://www.npmjs.com/package/<name>`; URLs pass through trimmed.
 - Server re-validates: only npm package URLs and `github.com` URLs are
   supported; anything else → typed `UnsupportedSourceError` (422 with code).
-- Prompt is optional, trimmed, and length-capped (planned: 1,000 chars) to
-  bound token spend.
+- Prompt is optional, trimmed, and length-capped to 1,000 chars
+  (`MAX_PROMPT_LENGTH` in `app/lib/audit.ts`) to bound token spend.
 
 ### 3.2 Library Resolution
 
@@ -97,11 +99,11 @@ interface LibraryContext {
 audits have no dependency data. Planned: fetch `raw.githubusercontent.com`
 manifest (see §7.2).
 
-### 3.3 Enrichment (Planned)
+### 3.3 Enrichment (Shipped)
 
 LLM inference over raw metadata hallucinates risk details. The enrichment
 layer injects **deterministic, verifiable signals** into the context before
-the LLM call, and will eventually own the trust score:
+the LLM call and feeds the scoring rubric:
 
 | Signal                    | Source                              | Use                          |
 | ------------------------- | ----------------------------------- | ---------------------------- |
@@ -129,29 +131,31 @@ versions (`pkg@1.2.3`). Cache writes happen after validation (§3.7).
 
 ### 3.5 Prompt Assembly
 
-**Owner:** `app/lib/openai.ts`
+**Owner:** `app/lib/audit.ts` (`buildPrompt`)
 
 - System prompt fixes the persona ("software supply-chain auditor") and the
   behavioral constraints (factual, conservative, mark uncertainty as lower
   severity).
 - User message = resolved prompt (user's or `DEFAULT_PROMPT`) + `LibraryContext`
   fields + metadata as a fenced JSON block.
-- **Bounding (planned):** metadata is truncated to ~8KB before assembly —
-  npm `readme` fields in particular can be megabytes. Prefer curated fields
-  over the raw registry document.
+- **Bounding:** metadata is truncated to ~8KB (`MAX_METADATA_BYTES`) before
+  assembly — npm `readme` fields in particular can be megabytes. Prefer
+  curated fields over the raw registry document.
 
 ### 3.6 LLM Audit
 
-**Owner:** `app/lib/openai.ts` (`runLibraryAudit`)
+**Owner:** `app/lib/llm` (`runLibraryAudit` in `llm/audit.ts`) and
+`app/lib/run-audit.ts`
 
-- Model: `gpt-4o-mini` — cost/latency sweet spot for structured extraction.
-- Mechanism: `chat.completions.parse` with
-  `zodResponseFormat(auditResultSchema, "audit_result")` — OpenAI structured
-  outputs guarantee schema-conformant JSON (no free-text parsing).
-- One call per audit; no tool use, no streaming (response is consumed as a
-  single JSON document).
+- Model: configurable per provider; default is `gpt-4o-mini` via the OpenAI
+  adapter. Supports OpenAI-compatible, Anthropic Claude, and Google Gemini.
+- Mechanism: provider-specific structured-output adapters in
+  `app/lib/llm/structured.ts` produce Zod-validated JSON.
+- One call per audit in standard mode; competition mode runs two audits plus
+  a merge judge.
+- Streaming: `POST /api/audit/stream` emits NDJSON progress events.
 - Failure modes: refusal / unparsed completion → `AuditParseError`
-  (planned: one retry with a stricter system reminder, then 502).
+  (one retry with a stricter system reminder, then 502).
 
 ### 3.7 Validation & Post-Processing
 
@@ -183,13 +187,12 @@ Post-parse checks (shipped in `postProcessAuditResult`):
 
 **Owner:** `app/lib/db.ts`, `migrations/`
 
-Current schema (`0001_initial.sql`):
+Current schema spans migrations `0001_initial.sql` through `0013_audit_meta_columns.sql`:
 
 - `package_audits` — one row per audited library URL.
 - `package_dependencies` — dependency rows keyed by `audit_id`
   (populated by `/api/dependencies`, not by `/api/audit`).
-
-Shipped (`0002_audit_reports.sql`):
+- `audit_reports` (shipped in `0002_audit_reports.sql`):
 
 ```sql
 CREATE TABLE audit_reports (
@@ -205,8 +208,11 @@ CREATE TABLE audit_reports (
 ```
 
 Write path: insert `package_audits` row → insert `audit_reports` row →
-insert dependency rows in one `db.batch` (matching the existing
-`saveDependencyTree` pattern).
+insert normalized finding/dependency rows in one `db.batch` (matching the
+existing `saveDependencyTree` pattern). Additional tables include
+`llm_interactions`, `audit_risks`, `audit_cves`, `audit_findings`,
+`audit_investigation_areas`, `rate_limits`, `providers`, `users`, `sessions`,
+`password_reset_tokens`, `provider_limits`, and `provider_usage`.
 
 ### 3.9 Response
 
@@ -225,19 +231,24 @@ insert dependency rows in one `db.batch` (matching the existing
 | `PackageNotFoundError`   | npm adapter             | 404    | package not found                |
 | `RepoNotFoundError`      | GitHub adapter          | 404    | repo not found / private         |
 | `UpstreamRateLimitError` | adapters / OpenAI       | 429    | retry after N seconds            |
-| `RateLimitExceededError` | `/api/audit`            | 429    | retry after N seconds            |
+| `RateLimitExceededError` | `/api/audit`, `/api/audit/stream` | 429    | retry after N seconds            |
 | `EnrichmentUnavailable`  | enrichment              | —      | non-fatal; signal omitted        |
 | `AuditParseError`        | LLM stage               | 502    | audit failed, safe to retry      |
 | `DbUnavailableError`     | `getDb()` (no binding)  | 500    | misconfiguration (already exist) |
+| `UNAUTHORIZED`           | auth routes             | 401    | invalid credentials / no session |
+| `FORBIDDEN`              | admin routes            | 403    | admin access required            |
+| `CONFLICT`               | user registration/update| 409    | duplicate email/username         |
 
 Rule: expected upstream failures never surface as bare 500s.
 
 ---
 
-## 5. Scoring Model (Target)
+## 5. Scoring Model (Shipped)
 
-Today the 0–100 trust score is fully LLM-assigned. Target: a deterministic
-rubric computed from enrichment signals, with the LLM score as fallback.
+The 0–100 trust score is computed by a deterministic rubric in
+`app/lib/score.ts` (`computeScore`), using enrichment signals from
+`app/lib/signals.ts`. The LLM score is still produced and stored, but the
+rubric score takes precedence when signals are available.
 
 ```
 score = 100
@@ -266,7 +277,7 @@ anonymous. Turnstile gate if abuse appears (see TODO §4.4).
 
 - One OpenAI call per audit; bounded context (~8KB metadata cap).
 - Cache hits cost zero.
-- Track `usage.total_tokens` per audit in `audit_reports` (planned column)
+- Track `tokens_total` per audit in `audit_reports` (`0007_audit_report_tokens_total.sql`)
   for spend monitoring.
 
 ### Security
@@ -282,8 +293,8 @@ anonymous. Turnstile gate if abuse appears (see TODO §4.4).
 
 - Cached audit: < 500ms p50.
 - Fresh audit: < 15s p50 (LLM-bound); enrichment adds ≤ 1s (parallel).
-- No streaming today; if audit latency becomes a UX issue, stream
-  progressive sections rather than the whole JSON doc.
+- Streaming is available via `POST /api/audit/stream`; if standard audit
+  latency becomes a UX issue, the stream progressively emits sections.
 
 ---
 
@@ -297,19 +308,30 @@ anonymous. Turnstile gate if abuse appears (see TODO §4.4).
    close the GitHub dependency gap (`/api/dependencies` parity with npm).
 4. **Re-audit scheduling** — Cron Trigger re-runs audits for watchlisted
    packages and diffs against the previous `audit_reports` row (v2).
+5. **Auth context consolidation** — move the per-page `useAuth` guards into a
+   top-level `AuthProvider` to eliminate duplicate session fetches.
+6. **Page component extraction** — break the 1,800-line `app/page.tsx` into
+   focused components (`audit-form`, `audit-progress`, `audit-result-tabs`).
 
 ---
 
 ## 8. Implementation Map
 
-| Stage             | File                              | State    |
-| ----------------- | --------------------------------- | -------- |
-| Intake            | `app/api/audit/route.ts`          | shipped  |
-| Resolution        | `app/lib/audit.ts`                | shipped  |
-| Enrichment        | `app/lib/signals.ts` (new)        | shipped  |
-| Cache             | `app/lib/cache.ts` (new)          | shipped  |
-| LLM audit         | `app/lib/llm.ts`                  | shipped  |
-| Validation        | `app/lib/audit.ts` (schema)       | shipped, post-checks shipped |
-| Persistence       | `app/lib/db.ts`, `migrations/`    | shipped  |
-| Rate limiting     | `app/lib/rate-limit.ts` (new)     | shipped  |
-| Scoring rubric    | `app/lib/score.ts` (new)          | shipped  |
+| Stage             | File                                              | State    |
+| ----------------- | ------------------------------------------------- | -------- |
+| Intake            | `app/api/audit/route.ts`, `app/api/audit/stream/route.ts` | shipped  |
+| Resolution        | `app/lib/audit.ts`                                | shipped  |
+| Enrichment        | `app/lib/signals.ts`                              | shipped  |
+| Cache             | `app/lib/cache.ts`                                | shipped  |
+| LLM audit         | `app/lib/llm/`                                    | shipped  |
+| Audit pipeline    | `app/lib/run-audit.ts`                            | shipped  |
+| Validation        | `app/lib/audit.ts` (schema + post-processing)     | shipped  |
+| Persistence       | `app/lib/db/`, `migrations/`                      | shipped  |
+| Rate limiting     | `app/lib/rate-limit.ts`                           | shipped  |
+| Scoring rubric    | `app/lib/score.ts`                                | shipped  |
+| CVE enrichment    | `app/lib/cve.ts`                                  | shipped  |
+| Codebase inspection | `app/lib/codebase.ts`                           | shipped  |
+| Provider config   | `app/lib/providers.ts`, `app/api/providers/`      | shipped  |
+| Auth / users      | `app/lib/auth.ts`, `app/api/auth/`, `app/api/users/` | shipped  |
+| Admin             | `app/api/admin/`, `app/admin/`                    | shipped  |
+| Route helpers     | `app/lib/api.ts`                                  | shipped  |
