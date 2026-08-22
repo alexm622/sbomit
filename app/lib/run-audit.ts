@@ -95,6 +95,7 @@ export interface RunAuditInput {
   apiKey?: string;
   baseUrl?: string;
   competitionMode?: CompetitionModeConfig;
+  userId?: number;
 }
 
 export interface RunAuditResult {
@@ -347,6 +348,7 @@ async function resolveLlmConfig(
       apiKey: providerRow.api_key,
       model: selection.model ?? dbModels[0] ?? undefined,
       baseUrl: providerRow.base_url ?? undefined,
+      providerId: selection.providerId,
     };
     return getLlmConfig(override);
   }
@@ -577,6 +579,13 @@ export async function runAudit(
   await emitStep(onEvent, "validate", "started");
   const resultJson = JSON.stringify(result);
   const interactionJson = JSON.stringify(interactions);
+  const providerModels = Array.from(
+    new Map(
+      interactions
+        .filter((i) => i.providerId)
+        .map((i) => [i.providerId, { providerId: i.providerId, model: i.model }]),
+    ).values(),
+  );
   await emitStep(onEvent, "validate", "completed");
 
   await emitStep(onEvent, "persist", "started");
@@ -592,6 +601,11 @@ export async function runAudit(
     cacheKey,
     interactionJson,
     codebaseInspected,
+    userId: input.userId,
+    providerModels,
+    cached: false,
+    startedAt: new Date(startedAt).toISOString(),
+    finishedAt: new Date().toISOString(),
   });
   await emitStep(onEvent, "persist", "completed");
 

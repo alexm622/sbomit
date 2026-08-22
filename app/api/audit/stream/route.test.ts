@@ -13,6 +13,26 @@ vi.mock("@/app/lib/run-audit", async (importOriginal) => {
   };
 });
 
+vi.mock("@/app/lib/db", () => ({
+  getDb: vi.fn(() => Promise.resolve({} as D1Database)),
+  getProviderLimit: vi.fn(() => Promise.resolve(null)),
+  getProviderUsage: vi.fn(() => Promise.resolve(0)),
+  recordProviderUsage: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("@/app/lib/auth", () => ({
+  requireAuth: vi.fn(() =>
+    Promise.resolve({ id: 1, username: "tester", email: "tester@example.com", fullName: "Tester", isAdmin: false }),
+  ),
+}));
+
+vi.mock("@/app/lib/rate-limit", () => ({
+  checkRateLimit: vi.fn(() =>
+    Promise.resolve({ allowed: true, limit: 10, remaining: 9, resetAt: Date.now() + 3600000 }),
+  ),
+  DEFAULT_RATE_LIMIT: { limit: 10, windowMinutes: 60 },
+}));
+
 const baseResult: AuditResult = {
   name: "lodash",
   version: "4.17.21",

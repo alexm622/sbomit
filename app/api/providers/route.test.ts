@@ -8,12 +8,26 @@ import {
   DELETE as deleteProvider,
 } from "./[id]/route";
 import * as dbModule from "@/app/lib/db";
+import * as authModule from "@/app/lib/auth";
 
 vi.mock("@/app/lib/db", async (importOriginal) => {
   const actual = await importOriginal<typeof dbModule>();
   return {
     ...actual,
     getDb: vi.fn(() => Promise.resolve(env.DB)),
+  };
+});
+
+vi.mock("@/app/lib/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof authModule>();
+  return {
+    ...actual,
+    requireAuth: vi.fn(() =>
+      Promise.resolve({ id: 1, username: "admin", email: "admin@example.com", fullName: "Admin", isAdmin: true }),
+    ),
+    requireAdmin: vi.fn(() =>
+      Promise.resolve({ id: 1, username: "admin", email: "admin@example.com", fullName: "Admin", isAdmin: true }),
+    ),
   };
 });
 
@@ -81,7 +95,9 @@ describe("/api/providers", () => {
     expect(stored?.api_key).toBe("sk-secret-key");
     expect(stored?.name).toBe("Test OpenAI Updated");
 
-    const listRes = await listProviders();
+    const listRes = await listProviders(
+      new Request("http://localhost/api/providers"),
+    );
     const listData = (await listRes.json()) as {
       providers: Array<{ id: string; apiKey?: string }>;
     };

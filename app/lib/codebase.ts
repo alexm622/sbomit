@@ -87,7 +87,6 @@ export const CHARS_PER_TOKEN_ESTIMATE = 3.0;
 // Default LLM context budget the pipeline targets. The source portion is
 // kept smaller than this to leave room for system prompts, metadata,
 // instructions, and the structured output.
-export const DEFAULT_CONTEXT_TOKEN_BUDGET = 256_000;
 export const DEFAULT_SOURCE_TOKEN_BUDGET = 200_000;
 
 // Tokens reserved for system prompt, metadata, instructions, JSON schema,
@@ -368,10 +367,6 @@ export function formatSnapshotForLlm(snapshot: CodebaseSnapshot): string {
     output += "\n";
   }
   return output;
-}
-
-export function formatFileList(files: CodebaseFile[]): string {
-  return files.map((f) => `- ${f.path} (${f.size} bytes)`).join("\n");
 }
 
 const PRIORITY_FILE_PATTERN =

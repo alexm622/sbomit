@@ -1,3 +1,5 @@
+import { withErrorHandling } from "@/app/lib/api";
+
 interface NpmMetadata {
   versions?: Record<string, unknown>;
   "dist-tags"?: Record<string, string>;
@@ -48,7 +50,7 @@ function compareVersions(a: string, b: string): number {
   return b.localeCompare(a);
 }
 
-export async function GET(request: Request) {
+export const GET = withErrorHandling(async (request: Request): Promise<Response> => {
   const { searchParams } = new URL(request.url);
   const input = searchParams.get("q");
 
@@ -77,4 +79,4 @@ export async function GET(request: Request) {
   const latest = data["dist-tags"]?.latest ?? null;
 
   return Response.json({ versions, latest });
-}
+});

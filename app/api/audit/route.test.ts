@@ -22,6 +22,15 @@ vi.mock("@/app/lib/rate-limit", () => ({
 
 vi.mock("@/app/lib/db", () => ({
   getDb: vi.fn(() => Promise.resolve(env.DB)),
+  getProviderLimit: vi.fn(() => Promise.resolve(null)),
+  getProviderUsage: vi.fn(() => Promise.resolve(0)),
+  recordProviderUsage: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("@/app/lib/auth", () => ({
+  requireAuth: vi.fn(() =>
+    Promise.resolve({ id: 1, username: "tester", email: "tester@example.com", fullName: "Tester", isAdmin: false }),
+  ),
 }));
 
 const baseResult: AuditResult = {
@@ -75,6 +84,7 @@ async function setupSchema(db: D1Database) {
       `version TEXT NOT NULL,` +
       `source TEXT NOT NULL,` +
       `url TEXT NOT NULL,` +
+      `user_id INTEGER,` +
       `audited_at DATETIME DEFAULT CURRENT_TIMESTAMP` +
       `);`,
   );
@@ -166,6 +176,7 @@ describe("POST /api/audit", () => {
         libraryUrl: "https://www.npmjs.com/package/lodash",
         version: undefined,
         prompt: undefined,
+        userId: 1,
       },
       undefined,
       expect.anything(),
@@ -192,6 +203,7 @@ describe("POST /api/audit", () => {
         libraryUrl: "https://www.npmjs.com/package/lodash",
         version: undefined,
         prompt: "focus on security",
+        userId: 1,
       },
       undefined,
       expect.anything(),
@@ -256,6 +268,7 @@ describe("POST /api/audit", () => {
         model: "claude-3-5-sonnet-20241022",
         apiKey: "anthropic-test",
         baseUrl: "https://anthropic.example.com",
+        userId: 1,
       },
       undefined,
       expect.anything(),

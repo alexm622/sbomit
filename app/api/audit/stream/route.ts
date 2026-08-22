@@ -4,35 +4,47 @@ import {
   type AuditEvent,
   type RunAuditInput,
 } from "@/app/lib/run-audit";
-import { isAuditError } from "@/app/lib/errors";
+import { AuditError, RateLimitExceededError } from "@/app/lib/errors";
+import { getDb } from "@/app/lib/db";
+import { requireAuth } from "@/app/lib/auth";
+import { parseJsonBody, withErrorHandling } from "@/app/lib/api";
+import {
+  checkProviderBudget,
+  finalizeProviderUsage,
+} from "@/app/lib/provider-budget";
+import { checkRateLimit, DEFAULT_RATE_LIMIT } from "@/app/lib/rate-limit";
+
+function getClientIp(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) {
+    return forwarded.split(",")[0]?.trim() || "unknown";
+  }
+  return request.headers.get("cf-connecting-ip") ?? "anonymous";
+}
 
 function encodeEvent(event: AuditEvent): string {
   return JSON.stringify(event) + "\n";
 }
 
-export async function POST(request: Request) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json(
-      { error: "Invalid JSON body.", code: "MISSING_INPUT" },
-      { status: 400 },
-    );
+export const POST = withErrorHandling(async (request: Request): Promise<Response> => {
+  const body = await parseJsonBody(request);
+  const input: RunAuditInput = parseRequestBody(body);
+
+  const db = await getDb();
+  const user = await requireAuth(db, request);
+  input.userId = user.id;
+
+  const rateLimit = await checkRateLimit(
+    db,
+    getClientIp(request),
+    DEFAULT_RATE_LIMIT.limit,
+    DEFAULT_RATE_LIMIT.windowMinutes,
+  );
+  if (!rateLimit.allowed) {
+    throw new RateLimitExceededError(rateLimit.limit, rateLimit.resetAt);
   }
 
-  let input: RunAuditInput;
-  try {
-    input = parseRequestBody(body);
-  } catch (error) {
-    if (isAuditError(error)) {
-      return Response.json(error.toJSON(), { status: error.status });
-    }
-    return Response.json(
-      { error: "Invalid request.", code: "INTERNAL_ERROR" },
-      { status: 500 },
-    );
-  }
+  await checkProviderBudget(db, input.providerId);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -60,10 +72,13 @@ export async function POST(request: Request) {
       try {
         const { result, meta } = await runAudit(input, (event) => {
           send(event);
-        });
+        }, db);
+
+        await finalizeProviderUsage(db, input.providerId, meta);
+
         sendComplete(result, meta);
       } catch (error) {
-        if (isAuditError(error)) {
+        if (error instanceof AuditError) {
           sendError({
             error: error.message,
             code: error.code,
@@ -87,4 +102,4 @@ export async function POST(request: Request) {
       Connection: "keep-alive",
     },
   });
-}
+});

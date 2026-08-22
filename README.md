@@ -5,15 +5,22 @@ AI-powered security audits for npm libraries and GitHub repositories. Paste a pa
 ## Features
 
 - **Instant audits** — Analyze any npm package or GitHub repo with a single request.
+- **Streaming audits** — Watch the audit pipeline progress in real time via `/api/audit/stream`.
 - **AI-generated reports** — Uses structured outputs (Zod schema) for consistent, machine-readable results.
+- **Competition mode** — Pit two models against each other and merge the results.
 - **Trust score** — 0–100 score with severity-ranked risks.
 - **Dependency tree** — Save direct, dev, peer, and optional dependencies to a Cloudflare D1 database.
 - **Transitive dependency resolution** — Walk the npm dependency graph depth-capped up to 3 levels.
+- **CVE enrichment** — Pulls security advisory data into the audit context.
+- **Codebase inspection** — Downloads and inspects package tarballs when available.
 - **Persisted reports** — Every audit is stored in D1 and gets a shareable `/report/[id]` URL.
 - **Rate limiting** — Per-IP token bucket on API routes.
 - **npm autocomplete** — Search the npm registry as you type.
 - **Custom prompts** — Tailor the audit to your product context (e.g. fintech supply-chain risks).
 - **Report export** — Download audit results as Markdown or JSON.
+- **User accounts** — Registration, login, password reset, and profile management.
+- **Admin console** — Manage users, block emails/usernames, configure providers, and set per-provider daily token budgets.
+- **Usage statistics** — Per-user and overall token use, audit counts, and score distributions.
 - **Health check** — `GET /api/health` verifies D1 and OpenAI bindings.
 
 ## Tech Stack
@@ -29,34 +36,61 @@ AI-powered security audits for npm libraries and GitHub repositories. Paste a pa
 ```
 app/
   api/
-    audit/                POST → run an AI audit and persist report
-    dependencies/         POST → save direct dependency tree to D1
+    audit/                    POST → run an AI audit and persist report
+    audit/stream/             POST → streaming audit events (NDJSON)
+    audits/                   GET → audit history; /[id] → single audit
+    auth/                     login, logout, register, session, change-password, password-reset
+    admin/                    users, blocked-emails/usernames, provider-limits, stats
+    dependencies/             POST → save direct dependency tree to D1
     dependencies/transitive/  POST → walk transitive deps depth-capped
-    search/               GET  → npm package autocomplete
-    reports/[id]/         GET  → fetch a stored report
-    health/               GET  → liveness + binding check
+    health/                   GET → liveness + binding check
+    models/                   POST → list available models for a provider
+    providers/                provider CRUD + /[id]/models
+    reports/[id]/             GET → fetch a stored report
+    search/                   GET → npm package autocomplete
+    users/me/                 GET/PUT current user; /stats, /reports
+    versions/                 GET → npm package versions
   components/
-    ui/                   Tailwind/shadcn-style UI primitives
-    report-view.tsx       Reusable report renderer + export
+    ui/                       Tailwind/shadcn-style UI primitives
+    alert.tsx, stat-card.tsx, page-shell.tsx
+    audit-jobs.tsx            Global audit job state
+    report-view.tsx           Reusable report renderer + export
+    competition-readout.tsx   Competition-mode results
+    site-header.tsx
   lib/
-    audit.ts              Library resolution (npm/GitHub) + Zod schemas
-    db.ts                 D1 helpers
-    llm.ts                LLM client (OpenAI-compatible, Claude, Gemini)
-    dependencies.ts       Transitive dependency walker
-    rate-limit.ts         Per-IP token bucket
-    errors.ts             Typed API error helpers
-  page.tsx                Main UI
-  report/[id]/            Shareable persisted report page
-migrations/               D1 SQL migrations
+    api.ts                    Route helpers (parseJsonBody, withErrorHandling)
+    audit.ts                  Library resolution (npm/GitHub) + Zod schemas
+    auth.ts                   Session/auth helpers
+    cache.ts                  Cached-report lookup
+    codebase.ts               Tarball inspection
+    cve.ts                    CVE enrichment
+    db/                       D1 helpers split by domain
+    dependencies.ts           Transitive dependency walker
+    errors.ts                 Typed API error helpers
+    format.ts                 Timestamp / duration / token formatters
+    llm/                      LLM client split by domain
+    providers.ts              Provider config utilities
+    rate-limit.ts             Per-IP token bucket
+    run-audit.ts              Audit pipeline orchestration
+    score.ts                  Deterministic scoring rubric
+    signals.ts                Enrichment signals
+    variants.ts               Severity / score / provider label variants
+  admin/                      Admin pages (users, settings, stats)
+  audits/                     Audit history page
+  login/, register/, profile/, reset-password/  Auth pages
+  settings/                   Provider/user settings
+  stats/                      Personal usage statistics
+  report/[id]/                Shareable persisted report page
+migrations/                   D1 SQL migrations
 scripts/
-  apply-migrations.sh     Apply local/remote D1 migrations + regenerate types
-wrangler.jsonc            Cloudflare Worker + D1 configuration
-.dev.vars.example         Local secrets template
+  apply-migrations.sh         Apply local/remote D1 migrations + regenerate types
+wrangler.jsonc                Cloudflare Worker + D1 configuration
+.dev.vars.example             Local secrets template
 ```
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (see `.nvmrc`)
 - npm
 - A Cloudflare account
 - API keys for at least one supported LLM provider:
@@ -78,39 +112,17 @@ wrangler.jsonc            Cloudflare Worker + D1 configuration
    cp .dev.vars.example .dev.vars
    ```
 
-   Edit `.dev.vars` and add your LLM credentials (and optional GitHub token for higher rate limits):
+   Edit `.dev.vars` and add your credentials:
 
    ```bash
-   # Pick a provider: openai (default), anthropic, or google
-   LLM_PROVIDER=openai
-   LLM_API_KEY=sk-your-openai-api-key-here
+   # Required: OpenAI API key (or the provider you configure)
+   OPENAI_API_KEY=sk-your-openai-api-key-here
 
-   # Optional: override the model or point to a custom OpenAI-compatible endpoint
-   # LLM_MODEL=gpt-4o-mini
-   # LLM_BASE_URL=https://api.openai.com/v1
+   # Required: secret used to sign session cookies
+   AUTH_SECRET=replace-with-a-long-random-secret
 
-   # GitHub token (optional, raises rate limits)
+   # Optional: GitHub token (raises rate limits and enables deeper signals)
    GITHUB_TOKEN=ghp-your-github-token-here
-   ```
-
-   Provider-specific examples:
-
-   ```bash
-   # Anthropic Claude
-   LLM_PROVIDER=anthropic
-   LLM_API_KEY=sk-ant-api03-...
-   LLM_MODEL=claude-3-5-sonnet-20241022
-
-   # Google Gemini
-   LLM_PROVIDER=google
-   LLM_API_KEY=...
-   LLM_MODEL=gemini-1.5-flash-latest
-
-   # Any OpenAI-compatible endpoint (e.g. OpenRouter, local llama.cpp)
-   LLM_PROVIDER=openai
-   LLM_API_KEY=...
-   LLM_BASE_URL=https://openrouter.ai/api/v1
-   LLM_MODEL=meta-llama/llama-3.1-70b-instruct
    ```
 
 3. Configure your D1 database in `wrangler.jsonc`:
@@ -128,10 +140,10 @@ wrangler.jsonc            Cloudflare Worker + D1 configuration
    }
    ```
 
-4. Apply migrations locally (and optionally remotely):
+4. Apply migrations locally:
 
    ```bash
-   ./scripts/apply-migrations.sh
+   npm run db:migrate
    ```
 
 ## Development
@@ -158,14 +170,14 @@ Tests run inside the Cloudflare Workers runtime using `@cloudflare/vitest-pool-w
 npm run test
 ```
 
-This applies D1 migrations to an isolated local database and runs unit/integration tests for library resolution, rate limiting, error handling, dependency walking, and D1 helpers.
+This applies D1 migrations to an isolated local database and runs unit/integration tests for library resolution, rate limiting, error handling, dependency walking, D1 helpers, auth, and LLM orchestration.
 
 ## Deployment
 
 Deploy to Cloudflare Workers:
 
 ```bash
-npx wrangler deploy
+npm run deploy
 ```
 
 Make sure remote D1 migrations are applied before deploying:
@@ -173,6 +185,8 @@ Make sure remote D1 migrations are applied before deploying:
 ```bash
 npx wrangler d1 migrations apply sbomit-deps --remote
 ```
+
+> `next start` / `next build` alone are **not** the deploy path. Use the OpenNext-based `preview`/`deploy` scripts.
 
 ## API
 
@@ -189,6 +203,10 @@ Run an AI audit on a library. Persists the package metadata, dependency tree, an
 
 Returns a structured `AuditResult`, `reportId`, and a `cached` flag. Identical URLs within 24 hours return a cached report.
 
+### `POST /api/audit/stream`
+
+Same input as `/api/audit`, but streams NDJSON progress events (`step`, `llm`, `eta`) and a final `complete` or `error` event.
+
 ### `POST /api/dependencies`
 
 Resolve and persist a direct dependency tree to D1.
@@ -198,8 +216,6 @@ Resolve and persist a direct dependency tree to D1.
   "libraryUrl": "https://www.npmjs.com/package/express"
 }
 ```
-
-Returns the saved audit ID and dependency list.
 
 ### `POST /api/dependencies/transitive`
 
@@ -213,6 +229,10 @@ Walk the npm dependency graph depth-capped (default depth 2, max 3).
 }
 ```
 
+### `GET /api/audits` and `GET /api/audits/[id]`
+
+List or fetch a persisted audit.
+
 ### `GET /api/reports/[id]`
 
 Fetch a stored audit report by its public ID.
@@ -224,6 +244,22 @@ Liveness check. Returns `ok`/`degraded` and binding status.
 ### `GET /api/search?q=<query>`
 
 Search npm packages for autocomplete.
+
+### Auth endpoints
+
+- `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`
+- `GET /api/auth/session`, `POST /api/auth/change-password`
+- `POST /api/auth/password-reset`, `POST /api/auth/password-reset/confirm`
+- `GET/PUT /api/users/me`, `GET /api/users/me/stats`, `GET /api/users/me/reports`
+
+### Admin endpoints
+
+- `GET/POST /api/admin/users`, `GET/PUT/DELETE /api/admin/users/[id]`
+- `POST /api/admin/users/[id]/set-password`, `POST /api/admin/users/[id]/reset-password`
+- `GET/POST/DELETE /api/admin/blocked-emails`
+- `GET/POST/DELETE /api/admin/blocked-usernames`
+- `GET/POST /api/admin/provider-limits`
+- `GET /api/admin/stats`
 
 ## License
 

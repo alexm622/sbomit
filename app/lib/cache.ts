@@ -1,4 +1,4 @@
-import type { StoredAuditReport } from "./db";
+import { getAuditReportByCacheKey, type StoredAuditReport } from "./db";
 
 const LATEST_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -36,10 +36,7 @@ export async function getCachedAuditReport(
   cacheKey: string,
   version: string,
 ): Promise<StoredAuditReport | null> {
-  const report = await db
-    .prepare("SELECT * FROM audit_reports WHERE cache_key = ? LIMIT 1")
-    .bind(cacheKey)
-    .first<StoredAuditReport>();
+  const report = await getAuditReportByCacheKey(db, cacheKey);
 
   if (!report) return null;
 

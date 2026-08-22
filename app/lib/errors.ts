@@ -11,8 +11,10 @@ export type ErrorCode =
   | "INTERNAL_ERROR"
   | "BAD_REQUEST"
   | "NOT_FOUND"
-  | "RATE_LIMITED"
-  | "UPSTREAM_ERROR";
+  | "UPSTREAM_ERROR"
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "CONFLICT";
 
 export class AuditError extends Error {
   code: ErrorCode;
@@ -119,8 +121,6 @@ export class DbUnavailableError extends AuditError {
 export function isAuditError(error: unknown): error is AuditError {
   return error instanceof AuditError;
 }
-
-export { AuditError as AppError };
 
 export function errorResponse(error: AuditError): Response {
   return Response.json(

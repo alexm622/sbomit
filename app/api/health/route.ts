@@ -1,7 +1,8 @@
 import { getDb } from "@/app/lib/db";
 import { getLlmConfig } from "@/app/lib/llm";
+import { withErrorHandling } from "@/app/lib/api";
 
-export async function GET() {
+export const GET = withErrorHandling(async (): Promise<Response> => {
   let dbOk = false;
   try {
     const db = await getDb();
@@ -32,4 +33,4 @@ export async function GET() {
     },
     { status: dbOk ? 200 : 503 },
   );
-}
+});
