@@ -12,21 +12,11 @@ export const GET = withErrorHandling(async (
 ): Promise<Response> => {
   const rateLimit = checkRateLimit(request, RATE_LIMIT);
   if (!rateLimit.allowed) {
-    return Response.json(
-      {
-        error: {
-          code: "RATE_LIMITED",
-          message: "Too many requests. Please slow down.",
-        },
-      },
-      {
-        status: 429,
-        headers: {
-          "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
-          "X-RateLimit-Remaining": String(rateLimit.remaining),
-          "X-RateLimit-Reset": String(rateLimit.resetAt),
-        },
-      },
+    throw new AuditError(
+      "RATE_LIMIT_EXCEEDED",
+      "Too many requests. Please slow down.",
+      429,
+      rateLimit.resetAt,
     );
   }
 

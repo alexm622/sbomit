@@ -2,6 +2,7 @@ import { isProvider } from "@/app/lib/providers";
 import { fetchModelsForProvider } from "@/app/lib/llm-models";
 import { getDb } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
+import { MissingInputError } from "@/app/lib/errors";
 import { parseJsonBody, withErrorHandling } from "@/app/lib/api";
 
 interface ModelsRequest {
@@ -11,22 +12,18 @@ interface ModelsRequest {
 }
 
 export const POST = withErrorHandling(async (request: Request): Promise<Response> => {
-  const body = await parseJsonBody(request);
+  const db = await getDb();
+  await requireAdmin(db, request);
 
+  const body = await parseJsonBody(request);
   const { provider, apiKey, baseUrl } = body as ModelsRequest;
 
   if (typeof provider !== "string" || !isProvider(provider)) {
-    return Response.json(
-      { error: "Unsupported or missing provider.", code: "MISSING_INPUT" },
-      { status: 400 },
-    );
+    throw new MissingInputError("Unsupported or missing provider.");
   }
 
   if (provider !== "openai" && (typeof apiKey !== "string" || !apiKey)) {
-    return Response.json(
-      { error: "API key is required.", code: "MISSING_INPUT" },
-      { status: 400 },
-    );
+    throw new MissingInputError("API key is required.");
   }
 
   if (
@@ -34,17 +31,9 @@ export const POST = withErrorHandling(async (request: Request): Promise<Response
     (typeof apiKey !== "string" || !apiKey) &&
     (typeof baseUrl !== "string" || !baseUrl)
   ) {
-    return Response.json(
-      {
-        error: "API key or base URL is required for OpenAI.",
-        code: "MISSING_INPUT",
-      },
-      { status: 400 },
-    );
+    throw new MissingInputError("API key or base URL is required for OpenAI.");
   }
 
-  const db = await getDb();
-  await requireAdmin(db, request);
   const models = await fetchModelsForProvider(
     provider,
     typeof apiKey === "string" ? apiKey : undefined,

@@ -11,7 +11,6 @@ export type ErrorCode =
   | "INTERNAL_ERROR"
   | "BAD_REQUEST"
   | "NOT_FOUND"
-  | "RATE_LIMITED"
   | "UPSTREAM_ERROR"
   | "UNAUTHORIZED"
   | "FORBIDDEN"

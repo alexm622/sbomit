@@ -26,6 +26,13 @@ vi.mock("@/app/lib/auth", () => ({
   ),
 }));
 
+vi.mock("@/app/lib/rate-limit", () => ({
+  checkRateLimit: vi.fn(() =>
+    Promise.resolve({ allowed: true, limit: 10, remaining: 9, resetAt: Date.now() + 3600000 }),
+  ),
+  DEFAULT_RATE_LIMIT: { limit: 10, windowMinutes: 60 },
+}));
+
 const baseResult: AuditResult = {
   name: "lodash",
   version: "4.17.21",

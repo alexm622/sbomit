@@ -1,5 +1,6 @@
 import { resolveTransitiveDependencies } from "@/app/lib/dependencies";
 import { checkRateLimit } from "@/app/lib/rate-limit";
+import { AuditError } from "@/app/lib/errors";
 import { z } from "zod";
 import { parseJsonBody, parseWithSchema, withErrorHandling } from "@/app/lib/api";
 
@@ -14,21 +15,11 @@ const RATE_LIMIT = { maxRequests: 15, windowMs: 60_000 };
 export const POST = withErrorHandling(async (request: Request): Promise<Response> => {
   const rateLimit = checkRateLimit(request, RATE_LIMIT);
   if (!rateLimit.allowed) {
-    return Response.json(
-      {
-        error: {
-          code: "RATE_LIMITED",
-          message: "Too many requests. Please slow down.",
-        },
-      },
-      {
-        status: 429,
-        headers: {
-          "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
-          "X-RateLimit-Remaining": String(rateLimit.remaining),
-          "X-RateLimit-Reset": String(rateLimit.resetAt),
-        },
-      },
+    throw new AuditError(
+      "RATE_LIMIT_EXCEEDED",
+      "Too many requests. Please slow down.",
+      429,
+      rateLimit.resetAt,
     );
   }
 

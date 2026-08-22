@@ -12,8 +12,10 @@ export const GET = withErrorHandling(async (request: Request): Promise<Response>
 });
 
 export const POST = withErrorHandling(async (request: Request): Promise<Response> => {
-  const body = await parseJsonBody(request);
+  const db = await getDb();
+  await requireAdmin(db, request);
 
+  const body = await parseJsonBody(request);
   const { name, provider, apiKey, baseUrl, models, isDefault } = body as {
     name?: unknown;
     provider?: unknown;
@@ -38,8 +40,6 @@ export const POST = withErrorHandling(async (request: Request): Promise<Response
     throw new MissingInputError("At least one model is required.");
   }
 
-  const db = await getDb();
-  await requireAdmin(db, request);
   const id = await createProvider(db, {
     name: name.trim(),
     provider,

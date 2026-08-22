@@ -23,10 +23,7 @@ export const POST = withErrorHandling(async (request: Request): Promise<Response
 
   const valid = await verifyPassword(currentPassword, stored.password_hash);
   if (!valid) {
-    return Response.json(
-      { error: "Current password is incorrect.", code: "UNAUTHORIZED" },
-      { status: 401 },
-    );
+    throw new AuditError("UNAUTHORIZED", "Current password is incorrect.", 401);
   }
 
   const passwordHash = await hashPassword(newPassword);

@@ -1,7 +1,13 @@
 import { z } from "zod";
-import { getDb, getUserById, updateUser, getUserByEmail } from "@/app/lib/db";
+import {
+  getDb,
+  getUserById,
+  updateUser,
+  getUserByEmail,
+  isEmailBlocked,
+} from "@/app/lib/db";
 import { requireAuth, toPublicUser } from "@/app/lib/auth";
-import { AuditError } from "@/app/lib/errors";
+import { AuditError, MissingInputError } from "@/app/lib/errors";
 import { parseJsonBody, parseWithSchema, withErrorHandling } from "@/app/lib/api";
 
 const updateSchema = z.object({
@@ -33,6 +39,9 @@ export const PUT = withErrorHandling(async (request: Request): Promise<Response>
 
   const email = parsed.email?.toLowerCase().trim();
   if (email && email !== existing.email) {
+    if (await isEmailBlocked(db, email)) {
+      throw new MissingInputError("This email address is not allowed.");
+    }
     if (await getUserByEmail(db, email)) {
       throw new AuditError("CONFLICT", "Email is already registered.", 409);
     }
