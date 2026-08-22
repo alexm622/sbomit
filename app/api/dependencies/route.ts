@@ -4,11 +4,8 @@ import {
   saveDependencyTree,
   type StoredDependency,
 } from "@/app/lib/db";
-import {
-  MissingInputError,
-  isAuditError,
-} from "@/app/lib/errors";
 import { requireAuth } from "@/app/lib/auth";
+import { parseJsonBody, withErrorHandling } from "@/app/lib/api";
 
 interface DependencyTreeResponse {
   auditId: number;
@@ -53,68 +50,46 @@ function extractDependencies(
   return deps;
 }
 
-export async function POST(request: Request) {
-  try {
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      throw new MissingInputError("Invalid JSON body.");
-    }
+export const POST = withErrorHandling(async (request: Request): Promise<Response> => {
+  const body = await parseJsonBody(request);
 
-    const libraryUrl =
-      body && typeof body === "object"
-        ? (body as { libraryUrl?: unknown }).libraryUrl
-        : undefined;
+  const libraryUrl =
+    body && typeof body === "object"
+      ? (body as { libraryUrl?: unknown }).libraryUrl
+      : undefined;
 
-    if (typeof libraryUrl !== "string" || libraryUrl.trim().length === 0) {
-      return Response.json(
-        { error: "libraryUrl is required." },
-        { status: 400 },
-      );
-    }
-
-    const db = await getDb();
-    const user = await requireAuth(db, request);
-    const context = await resolveLibrary(libraryUrl.trim());
-    const dependencies = extractDependencies(context);
-
-    const auditId = await saveDependencyTree(
-      db,
-      {
-        name: context.name,
-        version: context.version,
-        source: context.source,
-        url: context.url,
-        userId: user.id,
-      },
-      dependencies,
+  if (typeof libraryUrl !== "string" || libraryUrl.trim().length === 0) {
+    return Response.json(
+      { error: "libraryUrl is required." },
+      { status: 400 },
     );
+  }
 
-    const response: DependencyTreeResponse = {
-      auditId,
+  const db = await getDb();
+  const user = await requireAuth(db, request);
+  const context = await resolveLibrary(libraryUrl.trim());
+  const dependencies = extractDependencies(context);
+
+  const auditId = await saveDependencyTree(
+    db,
+    {
       name: context.name,
       version: context.version,
       source: context.source,
       url: context.url,
-      dependencies,
-    };
+      userId: user.id,
+    },
+    dependencies,
+  );
 
-    return Response.json(response);
-  } catch (error) {
-    if (isAuditError(error)) {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (error.retryAfter) {
-        headers["Retry-After"] = String(error.retryAfter);
-      }
-      return Response.json(error.toJSON(), {
-        status: error.status,
-        headers,
-      });
-    }
+  const response: DependencyTreeResponse = {
+    auditId,
+    name: context.name,
+    version: context.version,
+    source: context.source,
+    url: context.url,
+    dependencies,
+  };
 
-    const message =
-      error instanceof Error ? error.message : "An unexpected error occurred.";
-    return Response.json({ error: message }, { status: 500 });
-  }
-}
+  return Response.json(response);
+});

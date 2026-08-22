@@ -1,7 +1,7 @@
-import { AuditError, handleApiError } from "@/app/lib/errors";
 import { resolveTransitiveDependencies } from "@/app/lib/dependencies";
 import { checkRateLimit } from "@/app/lib/rate-limit";
 import { z } from "zod";
+import { parseJsonBody, parseWithSchema, withErrorHandling } from "@/app/lib/api";
 
 const requestSchema = z.object({
   libraryUrl: z.string().min(1, "libraryUrl is required"),
@@ -11,58 +11,18 @@ const requestSchema = z.object({
 
 const RATE_LIMIT = { maxRequests: 15, windowMs: 60_000 };
 
-export async function POST(request: Request) {
-  try {
-    const rateLimit = checkRateLimit(request, RATE_LIMIT);
-    if (!rateLimit.allowed) {
-      return Response.json(
-        {
-          error: {
-            code: "RATE_LIMITED",
-            message: "Too many requests. Please slow down.",
-          },
-        },
-        {
-          status: 429,
-          headers: {
-            "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
-            "X-RateLimit-Remaining": String(rateLimit.remaining),
-            "X-RateLimit-Reset": String(rateLimit.resetAt),
-          },
-        },
-      );
-    }
-
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      throw new AuditError("BAD_REQUEST", "Invalid JSON body.", 400);
-    }
-
-    const parsed = requestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new AuditError(
-        "BAD_REQUEST",
-        parsed.error.issues.map((e) => e.message).join("; "),
-        400,
-      );
-    }
-
-    const dependencies = await resolveTransitiveDependencies(
-      parsed.data.libraryUrl,
-      {
-        maxDepth: parsed.data.maxDepth,
-        includeDev: parsed.data.includeDev,
-      },
-    );
-
+export const POST = withErrorHandling(async (request: Request): Promise<Response> => {
+  const rateLimit = checkRateLimit(request, RATE_LIMIT);
+  if (!rateLimit.allowed) {
     return Response.json(
       {
-        dependencies,
-        count: dependencies.length,
+        error: {
+          code: "RATE_LIMITED",
+          message: "Too many requests. Please slow down.",
+        },
       },
       {
+        status: 429,
         headers: {
           "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
           "X-RateLimit-Remaining": String(rateLimit.remaining),
@@ -70,7 +30,30 @@ export async function POST(request: Request) {
         },
       },
     );
-  } catch (error) {
-    return handleApiError(error);
   }
-}
+
+  const body = await parseJsonBody(request);
+  const parsed = parseWithSchema(requestSchema, body);
+
+  const dependencies = await resolveTransitiveDependencies(
+    parsed.libraryUrl,
+    {
+      maxDepth: parsed.maxDepth,
+      includeDev: parsed.includeDev,
+    },
+  );
+
+  return Response.json(
+    {
+      dependencies,
+      count: dependencies.length,
+    },
+    {
+      headers: {
+        "X-RateLimit-Limit": String(RATE_LIMIT.maxRequests),
+        "X-RateLimit-Remaining": String(rateLimit.remaining),
+        "X-RateLimit-Reset": String(rateLimit.resetAt),
+      },
+    },
+  );
+});

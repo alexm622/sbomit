@@ -58,9 +58,45 @@ export function createDefaultProviderConfig(
   };
 }
 
+export function parseModels(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    return value
+      .map((m) => (typeof m === "string" ? m.trim() : ""))
+      .filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean);
+  }
+  return undefined;
+}
+
 export function parseModelsInput(value: string): string[] {
-  return value
-    .split(",")
-    .map((m) => m.trim())
-    .filter(Boolean);
+  return parseModels(value) ?? [];
+}
+
+export function publicProvider(provider: {
+  id: string;
+  name: string;
+  provider: string;
+  api_key: string;
+  base_url: string | null;
+  models: string;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+}) {
+  return {
+    id: provider.id,
+    name: provider.name,
+    provider: provider.provider,
+    baseUrl: provider.base_url,
+    models: JSON.parse(provider.models) as string[],
+    hasApiKey: Boolean(provider.api_key),
+    isDefault: provider.is_default === 1,
+    createdAt: provider.created_at,
+    updatedAt: provider.updated_at,
+  };
 }

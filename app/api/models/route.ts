@@ -1,8 +1,8 @@
 import { isProvider } from "@/app/lib/providers";
 import { fetchModelsForProvider } from "@/app/lib/llm-models";
-import { handleApiError } from "@/app/lib/errors";
 import { getDb } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
+import { parseJsonBody, withErrorHandling } from "@/app/lib/api";
 
 interface ModelsRequest {
   provider?: unknown;
@@ -10,16 +10,8 @@ interface ModelsRequest {
   baseUrl?: unknown;
 }
 
-export async function POST(request: Request): Promise<Response> {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json(
-      { error: "Invalid JSON body.", code: "MISSING_INPUT" },
-      { status: 400 },
-    );
-  }
+export const POST = withErrorHandling(async (request: Request): Promise<Response> => {
+  const body = await parseJsonBody(request);
 
   const { provider, apiKey, baseUrl } = body as ModelsRequest;
 
@@ -51,16 +43,12 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  try {
-    const db = await getDb();
-    await requireAdmin(db, request);
-    const models = await fetchModelsForProvider(
-      provider,
-      typeof apiKey === "string" ? apiKey : undefined,
-      typeof baseUrl === "string" ? baseUrl : undefined,
-    );
-    return Response.json({ models }, { status: 200 });
-  } catch (error) {
-    return handleApiError(error);
-  }
-}
+  const db = await getDb();
+  await requireAdmin(db, request);
+  const models = await fetchModelsForProvider(
+    provider,
+    typeof apiKey === "string" ? apiKey : undefined,
+    typeof baseUrl === "string" ? baseUrl : undefined,
+  );
+  return Response.json({ models }, { status: 200 });
+});

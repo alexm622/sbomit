@@ -1,4 +1,6 @@
-export async function GET(request: Request) {
+import { withErrorHandling } from "@/app/lib/api";
+
+export const GET = withErrorHandling(async (request: Request): Promise<Response> => {
   const { searchParams } = new URL(request.url);
   const query = searchParams.get("q");
 
@@ -35,4 +37,4 @@ export async function GET(request: Request) {
   );
 
   return Response.json({ packages });
-}
+});
