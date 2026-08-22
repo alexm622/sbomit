@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { apiFetch, apiFetchJson } from "@/app/lib/api-fetch";
 
 export interface AuthUser {
   id: number;
@@ -34,17 +35,17 @@ export function useAuth(): UseAuthResult {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch("/api/auth/session", {
+      const data = await apiFetch<{ user: AuthUser | null }>("/api/auth/session", {
         credentials: "same-origin",
         cache: "no-store",
       });
-      if (res.status === 401) {
+      setUser(data.user ?? null);
+    } catch (err) {
+      const status = typeof err === "object" && err !== null ? (err as { status?: number }).status : undefined;
+      if (status === 401) {
         setUser(null);
         return;
       }
-      const data = (await res.json()) as { user: AuthUser | null };
-      setUser(data.user ?? null);
-    } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load session.");
       setUser(null);
     } finally {
@@ -60,16 +61,11 @@ export function useAuth(): UseAuthResult {
   }, [refresh]);
 
   const login = React.useCallback(async (username: string, password: string) => {
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ username, password }),
-    });
-    const data = (await res.json()) as { user?: AuthUser; error?: string; code?: string };
-    if (!res.ok || data.error) {
-      throw new Error(data.error || "Login failed.");
-    }
+    const data = await apiFetchJson<{ user?: AuthUser }>(
+      "/api/auth/login",
+      { username, password },
+      { credentials: "same-origin" },
+    );
     setUser(data.user ?? null);
   }, []);
 
@@ -80,23 +76,18 @@ export function useAuth(): UseAuthResult {
       fullName: string;
       password: string;
     }) => {
-      const res = await fetch("/api/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify(input),
-      });
-      const data = (await res.json()) as { user?: AuthUser; error?: string; code?: string };
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Registration failed.");
-      }
+      const data = await apiFetchJson<{ user?: AuthUser }>(
+        "/api/auth/register",
+        input,
+        { credentials: "same-origin" },
+      );
       setUser(data.user ?? null);
     },
     [],
   );
 
   const logout = React.useCallback(async () => {
-    await fetch("/api/auth/logout", {
+    await apiFetch<Record<string, unknown>>("/api/auth/logout", {
       method: "POST",
       credentials: "same-origin",
     });

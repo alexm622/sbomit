@@ -1,13 +1,14 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, Loader2, AlertCircle, CheckCircle2, ShieldAlert, Plus, Trash2 } from "lucide-react";
-import { SiteHeader } from "@/app/components/site-header";
+import { Loader2, AlertCircle, CheckCircle2, ShieldAlert, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card";
+import { Alert } from "@/app/components/ui/alert";
+import { PageShell } from "@/app/components/page-shell";
+import { apiFetch, apiFetchJson } from "@/app/lib/api-fetch";
 import { useAuth } from "@/app/lib/use-auth";
 
 interface ProviderLimitItem {
@@ -31,17 +32,11 @@ export default function AdminSettingsPage() {
   const load = React.useCallback(async () => {
     setError(null);
     try {
-      const [limitsRes, emailsRes, usernamesRes] = await Promise.all([
-        fetch("/api/admin/provider-limits"),
-        fetch("/api/admin/blocked-emails"),
-        fetch("/api/admin/blocked-usernames"),
+      const [limitsData, emailsData, usernamesData] = await Promise.all([
+        apiFetch<{ providers?: ProviderLimitItem[] }>("/api/admin/provider-limits"),
+        apiFetch<{ emails?: string[] }>("/api/admin/blocked-emails"),
+        apiFetch<{ usernames?: string[] }>("/api/admin/blocked-usernames"),
       ]);
-      const limitsData = (await limitsRes.json()) as { providers?: ProviderLimitItem[]; error?: string };
-      const emailsData = (await emailsRes.json()) as { emails?: string[]; error?: string };
-      const usernamesData = (await usernamesRes.json()) as { usernames?: string[]; error?: string };
-      if (!limitsRes.ok || limitsData.error) throw new Error(limitsData.error || "Failed to load limits.");
-      if (!emailsRes.ok || emailsData.error) throw new Error(emailsData.error || "Failed to load blocked emails.");
-      if (!usernamesRes.ok || usernamesData.error) throw new Error(usernamesData.error || "Failed to load blocked usernames.");
       setProviders(limitsData.providers ?? []);
       setBlockedEmails(emailsData.emails ?? []);
       setBlockedUsernames(usernamesData.usernames ?? []);
@@ -69,13 +64,7 @@ export default function AdminSettingsPage() {
       return;
     }
     try {
-      const res = await fetch("/api/admin/provider-limits", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerId, dailyTokenLimit }),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to update limit.");
+      await apiFetchJson("/api/admin/provider-limits", { providerId, dailyTokenLimit }, { method: "PUT" });
       setSuccess(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update limit.");
@@ -86,13 +75,9 @@ export default function AdminSettingsPage() {
     if (!newEmail.trim()) return;
     setError(null);
     try {
-      const res = await fetch("/api/admin/blocked-emails", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: newEmail.trim() }),
+      const data = await apiFetchJson<{ emails?: string[] }>("/api/admin/blocked-emails", {
+        email: newEmail.trim(),
       });
-      const data = (await res.json()) as { emails?: string[]; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to block email.");
       setBlockedEmails(data.emails ?? []);
       setNewEmail("");
     } catch (err) {
@@ -103,9 +88,10 @@ export default function AdminSettingsPage() {
   const removeBlockedEmail = React.useCallback(async (email: string) => {
     setError(null);
     try {
-      const res = await fetch(`/api/admin/blocked-emails?email=${encodeURIComponent(email)}`, { method: "DELETE" });
-      const data = (await res.json()) as { emails?: string[]; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to unblock email.");
+      const data = await apiFetch<{ emails?: string[] }>(
+        `/api/admin/blocked-emails?email=${encodeURIComponent(email)}`,
+        { method: "DELETE" },
+      );
       setBlockedEmails(data.emails ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to unblock email.");
@@ -116,13 +102,9 @@ export default function AdminSettingsPage() {
     if (!newUsername.trim()) return;
     setError(null);
     try {
-      const res = await fetch("/api/admin/blocked-usernames", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: newUsername.trim() }),
+      const data = await apiFetchJson<{ usernames?: string[] }>("/api/admin/blocked-usernames", {
+        username: newUsername.trim(),
       });
-      const data = (await res.json()) as { usernames?: string[]; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to block username.");
       setBlockedUsernames(data.usernames ?? []);
       setNewUsername("");
     } catch (err) {
@@ -133,9 +115,10 @@ export default function AdminSettingsPage() {
   const removeBlockedUsername = React.useCallback(async (username: string) => {
     setError(null);
     try {
-      const res = await fetch(`/api/admin/blocked-usernames?username=${encodeURIComponent(username)}`, { method: "DELETE" });
-      const data = (await res.json()) as { usernames?: string[]; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to unblock username.");
+      const data = await apiFetch<{ usernames?: string[] }>(
+        `/api/admin/blocked-usernames?username=${encodeURIComponent(username)}`,
+        { method: "DELETE" },
+      );
       setBlockedUsernames(data.usernames ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to unblock username.");
@@ -144,26 +127,31 @@ export default function AdminSettingsPage() {
 
   if (authLoading || !user?.isAdmin) {
     return (
-      <div className="flex min-h-full flex-col bg-background">
-        <SiteHeader />
-        <main className="flex flex-1 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></main>
-      </div>
+      <PageShell mainClassName="flex items-center justify-center" footer={false}>
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </PageShell>
     );
   }
 
   return (
-    <div className="flex min-h-full flex-col bg-background">
-      <SiteHeader />
-      <main className="flex-1">
-        <section className="mx-auto max-w-3xl px-4 py-12 sm:px-6 lg:px-8">
-          <Link href="/" className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground"><ChevronLeft className="mr-1 h-4 w-4" />Back to audits</Link>
-          <div className="flex items-center gap-3"><ShieldAlert className="h-6 w-6 text-primary" /><h1 className="text-3xl font-bold tracking-tight">Admin settings</h1></div>
-          <p className="mt-2 text-muted-foreground">Provider token limits and registration blocklists.</p>
+    <PageShell maxWidth="3xl" backHref="/" footer={false}>
+      <div className="flex items-center gap-3"><ShieldAlert className="h-6 w-6 text-primary" /><h1 className="text-3xl font-bold tracking-tight">Admin settings</h1></div>
+      <p className="mt-2 text-muted-foreground">Provider token limits and registration blocklists.</p>
 
-          {error && <div className="mt-6 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{error}</div>}
-          {success && <div className="mt-6 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />Limits saved.</div>}
+      {error && (
+        <Alert variant="error" className="mt-6 gap-2 rounded-lg px-3 py-2 text-sm">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          {error}
+        </Alert>
+      )}
+      {success && (
+        <Alert variant="success" className="mt-6 gap-2 rounded-lg px-3 py-2 text-sm">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          Limits saved.
+        </Alert>
+      )}
 
-          <Card className="mt-8">
+      <Card className="mt-8">
             <CardHeader><CardTitle>Provider daily token limits</CardTitle><CardDescription>Leave empty for unlimited.</CardDescription></CardHeader>
             <CardContent className="space-y-4">
               {providers.map((p) => (
@@ -205,8 +193,6 @@ export default function AdminSettingsPage() {
               </div>
             </CardContent>
           </Card>
-        </section>
-      </main>
-    </div>
+    </PageShell>
   );
 }

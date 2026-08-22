@@ -1,10 +1,8 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ChevronLeft,
   Loader2,
   AlertCircle,
   Search,
@@ -16,11 +14,13 @@ import {
   Users,
   UserX,
 } from "lucide-react";
-import { SiteHeader } from "@/app/components/site-header";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
 import { Badge } from "@/app/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card";
+import { Alert } from "@/app/components/ui/alert";
+import { PageShell } from "@/app/components/page-shell";
+import { apiFetch, apiFetchJson } from "@/app/lib/api-fetch";
 import { useAuth } from "@/app/lib/use-auth";
 
 interface PublicUser {
@@ -48,9 +48,9 @@ export default function AdminUsersPage() {
     try {
       const params = new URLSearchParams();
       if (search.trim()) params.set("q", search.trim());
-      const res = await fetch(`/api/admin/users?${params.toString()}`);
-      const data = (await res.json()) as { users?: PublicUser[]; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to load users.");
+      const data = await apiFetch<{ users?: PublicUser[] }>(
+        `/api/admin/users?${params.toString()}`,
+      );
       setUsers(data.users ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load users.");
@@ -73,13 +73,7 @@ export default function AdminUsersPage() {
   const updateUser = React.useCallback(async (id: number, patch: Partial<PublicUser>) => {
     setActionError(null);
     try {
-      const res = await fetch(`/api/admin/users/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to update user.");
+      await apiFetchJson(`/api/admin/users/${id}`, patch, { method: "PUT" });
       await loadUsers();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Update failed.");
@@ -90,9 +84,9 @@ export default function AdminUsersPage() {
     if (!window.confirm("Delete this user?")) return;
     setActionError(null);
     try {
-      const res = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to delete user.");
+      await apiFetch<Record<string, unknown>>(`/api/admin/users/${id}`, {
+        method: "DELETE",
+      });
       await loadUsers();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Delete failed.");
@@ -108,13 +102,7 @@ export default function AdminUsersPage() {
     }
     setActionError(null);
     try {
-      const res = await fetch(`/api/admin/users/${id}/set-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to set password.");
+      await apiFetchJson(`/api/admin/users/${id}/set-password`, { password });
       await loadUsers();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Set password failed.");
@@ -124,9 +112,10 @@ export default function AdminUsersPage() {
   const resetPassword = React.useCallback(async (id: number) => {
     setActionError(null);
     try {
-      const res = await fetch(`/api/admin/users/${id}/reset-password`, { method: "POST" });
-      const data = (await res.json()) as { token?: string; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to create reset token.");
+      const data = await apiFetch<{ token?: string }>(
+        `/api/admin/users/${id}/reset-password`,
+        { method: "POST" },
+      );
       window.alert(`Reset token: ${data.token ?? "n/a"}`);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Reset failed.");
@@ -135,45 +124,45 @@ export default function AdminUsersPage() {
 
   if (authLoading || !user?.isAdmin) {
     return (
-      <div className="flex min-h-full flex-col bg-background">
-        <SiteHeader />
-        <main className="flex flex-1 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </main>
-      </div>
+      <PageShell mainClassName="flex items-center justify-center" footer={false}>
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </PageShell>
     );
   }
 
   return (
-    <div className="flex min-h-full flex-col bg-background">
-      <SiteHeader />
-      <main className="flex-1">
-        <section className="mx-auto max-w-6xl px-4 py-12 sm:px-6 lg:px-8">
-          <Link href="/" className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
-            <ChevronLeft className="mr-1 h-4 w-4" />
-            Back to audits
-          </Link>
-          <div className="flex items-center gap-3">
-            <Users className="h-6 w-6 text-primary" />
-            <h1 className="text-3xl font-bold tracking-tight">User management</h1>
-          </div>
-          <p className="mt-2 text-muted-foreground">Search, edit, block, and manage accounts.</p>
+    <PageShell maxWidth="6xl" backHref="/" footer={false}>
+      <div className="flex items-center gap-3">
+        <Users className="h-6 w-6 text-primary" />
+        <h1 className="text-3xl font-bold tracking-tight">User management</h1>
+      </div>
+      <p className="mt-2 text-muted-foreground">Search, edit, block, and manage accounts.</p>
 
-          <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-center">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void loadUsers()} placeholder="Search by username, email, or name" className="pl-9" />
-            </div>
-            <Button onClick={() => void loadUsers()} disabled={loading}>
-              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-              Search
-            </Button>
-          </div>
+      <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-center">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void loadUsers()} placeholder="Search by username, email, or name" className="pl-9" />
+        </div>
+        <Button onClick={() => void loadUsers()} disabled={loading}>
+          {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+          Search
+        </Button>
+      </div>
 
-          {error && <div className="mt-6 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{error}</div>}
-          {actionError && <div className="mt-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{actionError}</div>}
+      {error && (
+        <Alert variant="error" className="mt-6 gap-2 rounded-lg px-3 py-2 text-sm">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          {error}
+        </Alert>
+      )}
+      {actionError && (
+        <Alert variant="error" className="mt-4 gap-2 rounded-lg px-3 py-2 text-sm">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          {actionError}
+        </Alert>
+      )}
 
-          <Card className="mt-6">
+      <Card className="mt-6">
             <CardHeader>
               <CardTitle>Users</CardTitle>
               <CardDescription>{users.length} user(s) found.</CardDescription>
@@ -220,8 +209,6 @@ export default function AdminUsersPage() {
               </div>
             </CardContent>
           </Card>
-        </section>
-      </main>
-    </div>
+    </PageShell>
   );
 }

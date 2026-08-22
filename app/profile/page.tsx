@@ -1,12 +1,13 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { ChevronLeft, Loader2, AlertCircle, CheckCircle2, Save, KeyRound } from "lucide-react";
-import { SiteHeader } from "@/app/components/site-header";
+import { Loader2, AlertCircle, CheckCircle2, Save, KeyRound } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card";
+import { Alert } from "@/app/components/ui/alert";
+import { PageShell } from "@/app/components/page-shell";
+import { apiFetchJson } from "@/app/lib/api-fetch";
 import { useAuth } from "@/app/lib/use-auth";
 
 export default function ProfilePage() {
@@ -40,15 +41,7 @@ export default function ProfilePage() {
       setError(null);
       setSuccess(false);
       try {
-        const res = await fetch("/api/users/me", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fullName, email }),
-        });
-        const data = (await res.json()) as { error?: string };
-        if (!res.ok || data.error) {
-          throw new Error(data.error || "Failed to update profile.");
-        }
+        await apiFetchJson("/api/users/me", { fullName, email }, { method: "PUT" });
         setSuccess(true);
         await refresh();
       } catch (err) {
@@ -71,15 +64,10 @@ export default function ProfilePage() {
       }
       setPasswordLoading(true);
       try {
-        const res = await fetch("/api/auth/change-password", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ currentPassword, newPassword }),
+        await apiFetchJson("/api/auth/change-password", {
+          currentPassword,
+          newPassword,
         });
-        const data = (await res.json()) as { error?: string };
-        if (!res.ok || data.error) {
-          throw new Error(data.error || "Failed to change password.");
-        }
         setPasswordSuccess(true);
         setCurrentPassword("");
         setNewPassword("");
@@ -97,33 +85,20 @@ export default function ProfilePage() {
 
   if (authLoading || !user) {
     return (
-      <div className="flex min-h-full flex-col bg-background">
-        <SiteHeader />
-        <main className="flex flex-1 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </main>
-      </div>
+      <PageShell mainClassName="flex items-center justify-center" footer={false}>
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </PageShell>
     );
   }
 
   return (
-    <div className="flex min-h-full flex-col bg-background">
-      <SiteHeader />
-      <main className="flex-1">
-        <section className="mx-auto max-w-3xl px-4 py-12 sm:px-6 lg:px-8">
-          <Link
-            href="/"
-            className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ChevronLeft className="mr-1 h-4 w-4" />
-            Back to audits
-          </Link>
-          <h1 className="text-3xl font-bold tracking-tight">Profile</h1>
-          <p className="mt-2 text-muted-foreground">
-            Manage your account details and password.
-          </p>
+    <PageShell maxWidth="3xl" backHref="/" footer={false}>
+      <h1 className="text-3xl font-bold tracking-tight">Profile</h1>
+      <p className="mt-2 text-muted-foreground">
+        Manage your account details and password.
+      </p>
 
-          <div className="mt-8 space-y-6">
+      <div className="mt-8 space-y-6">
             <Card>
               <CardHeader>
                 <CardTitle>Account details</CardTitle>
@@ -160,16 +135,16 @@ export default function ProfilePage() {
                   </div>
 
                   {error && (
-                    <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+                    <Alert variant="error" className="gap-2 rounded-lg px-3 py-2 text-sm">
                       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                       {error}
-                    </div>
+                    </Alert>
                   )}
                   {success && (
-                    <div className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200">
+                    <Alert variant="success" className="gap-2 rounded-lg px-3 py-2 text-sm">
                       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
                       Profile updated.
-                    </div>
+                    </Alert>
                   )}
 
                   <Button type="submit" disabled={loading}>
@@ -230,16 +205,16 @@ export default function ProfilePage() {
                   </div>
 
                   {passwordError && (
-                    <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+                    <Alert variant="error" className="gap-2 rounded-lg px-3 py-2 text-sm">
                       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                       {passwordError}
-                    </div>
+                    </Alert>
                   )}
                   {passwordSuccess && (
-                    <div className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200">
+                    <Alert variant="success" className="gap-2 rounded-lg px-3 py-2 text-sm">
                       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
                       Password changed.
-                    </div>
+                    </Alert>
                   )}
 
                   <Button type="submit" disabled={passwordLoading}>
@@ -250,8 +225,6 @@ export default function ProfilePage() {
               </CardContent>
             </Card>
           </div>
-        </section>
-      </main>
-    </div>
+    </PageShell>
   );
 }

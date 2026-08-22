@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Shield, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
+import { Alert } from "@/app/components/ui/alert";
 import { useAuth } from "@/app/lib/use-auth";
 
 export default function LoginPage() {
@@ -89,10 +90,10 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+            <Alert variant="error" className="gap-2 rounded-lg px-3 py-2 text-sm">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
               {error}
-            </div>
+            </Alert>
           )}
 
           <Button type="submit" className="w-full" disabled={loading}>

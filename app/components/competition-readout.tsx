@@ -5,19 +5,9 @@ import { Bot, Scale, XCircle } from "lucide-react";
 import { Badge } from "@/app/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card";
 import { ReportView } from "@/app/components/report-view";
+import { providerLabel } from "@/app/lib/variants";
 import type { AuditResult, CompetitionReadout } from "@/app/lib/audit";
-import type { ProviderConfig } from "@/app/lib/providers";
 
-function providerName(
-  configs: ProviderConfig[],
-  provider?: string,
-): string {
-  if (!provider) return "unknown";
-  const config =
-    configs.find((c) => c.id === provider) ??
-    configs.find((c) => c.provider === provider);
-  return config?.name ?? provider;
-}
 
 function CompactAuditCard({
   label,
@@ -138,17 +128,15 @@ function ExclusionsPanel({
 
 export function CompetitionReadoutView({
   result,
-  configs,
 }: {
   result: AuditResult;
-  configs: ProviderConfig[];
 }) {
   const readout = result.competitionReadout;
   if (!readout) return null;
 
-  const modelAProvider = providerName(configs, readout.modelA.provider);
-  const modelBProvider = providerName(configs, readout.modelB.provider);
-  const judgeProvider = providerName(configs, readout.judge.provider);
+  const modelAProvider = providerLabel(readout.modelA.provider);
+  const modelBProvider = providerLabel(readout.modelB.provider);
+  const judgeProvider = providerLabel(readout.judge.provider);
 
   return (
     <div className="space-y-6">

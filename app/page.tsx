@@ -1597,7 +1597,7 @@ export default function Home() {
 
               {result.competitionReadout && (
                 <TabsContent value="competition" className="space-y-4">
-                  <CompetitionReadoutView result={result} configs={configs} />
+                  <CompetitionReadoutView result={result} />
                 </TabsContent>
               )}
 

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { apiFetch, apiFetchJson } from "@/app/lib/api-fetch";
 import {
   createDefaultProviderConfig,
   type Provider,
@@ -66,14 +67,9 @@ export function useProviderConfigs(): UseProviderConfigsResult {
   }, []);
 
   const refresh = React.useCallback(async () => {
-    const res = await fetch("/api/providers", { cache: "no-store" });
-    const data = (await res.json()) as {
+    const data = await apiFetch<{
       providers?: ProviderConfig[];
-      error?: string;
-    };
-    if (!res.ok || data.error) {
-      throw new Error(data.error || "Failed to load providers.");
-    }
+    }>("/api/providers", { cache: "no-store" });
     const providers = (data.providers ?? []).map(normalizeServerConfig);
     setConfigs(providers);
     return providers;
@@ -115,21 +111,16 @@ export function useProviderConfigs(): UseProviderConfigsResult {
   const addConfig = React.useCallback(
     async (provider?: Provider) => {
       const draft = createDefaultProviderConfig(provider ?? "openai");
-      const res = await fetch("/api/providers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: draft.name,
-          provider: draft.provider,
-          apiKey: "",
-          baseUrl: draft.baseUrl,
-          models: draft.models,
-          isDefault: configs.length === 0,
-        }),
+      const data = await apiFetchJson<{ id?: string }>("/api/providers", {
+        name: draft.name,
+        provider: draft.provider,
+        apiKey: "",
+        baseUrl: draft.baseUrl,
+        models: draft.models,
+        isDefault: configs.length === 0,
       });
-      const data = (await res.json()) as { id?: string; error?: string };
-      if (!res.ok || data.error || !data.id) {
-        throw new Error(data.error || "Failed to create provider.");
+      if (!data.id) {
+        throw new Error("Failed to create provider.");
       }
       await refresh();
       setSelectedId(data.id);
@@ -151,15 +142,9 @@ export function useProviderConfigs(): UseProviderConfigsResult {
       if (patch.models !== undefined) body.models = patch.models;
       if (patch.isDefault !== undefined) body.isDefault = patch.isDefault;
 
-      const res = await fetch(`/api/providers/${id}`, {
+      await apiFetchJson<{ ok?: boolean }>(`/api/providers/${id}`, body, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Failed to update provider.");
-      }
       await refresh();
       if (patch.isDefault) {
         setSelectedId(id);
@@ -170,14 +155,9 @@ export function useProviderConfigs(): UseProviderConfigsResult {
 
   const removeConfig = React.useCallback(
     async (id: string) => {
-      const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
-      const data = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-      };
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Failed to delete provider.");
-      }
+      await apiFetch<Record<string, unknown>>(`/api/providers/${id}`, {
+        method: "DELETE",
+      });
       const providers = await refresh();
       if (selectedId === id) {
         const fallback =

@@ -1,11 +1,15 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, Loader2, AlertCircle, BarChart3, FileText, Users, Coins, Activity, Cpu, Building2, Trophy } from "lucide-react";
-import { SiteHeader } from "@/app/components/site-header";
+import { Loader2, AlertCircle, BarChart3, FileText, Users, Coins, Activity, Cpu, Building2, Trophy } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card";
+import { Alert } from "@/app/components/ui/alert";
+import { StatCard } from "@/app/components/stat-card";
+import { PageShell } from "@/app/components/page-shell";
+import { providerLabel } from "@/app/lib/variants";
+import { formatDuration } from "@/app/lib/format";
+import { apiFetch } from "@/app/lib/api-fetch";
 import { useAuth } from "@/app/lib/use-auth";
 
 interface ModelBreakdown {
@@ -71,25 +75,6 @@ interface OverallStats {
   dailyActiveUsers: DailyActiveUsers[];
   providerBudgetUtilization: ProviderBudgetUtilization[];
   topUsers: TopUser[];
-}
-
-function providerLabel(provider: string): string {
-  if (provider === "openai") return "OpenAI";
-  if (provider === "anthropic") return "Anthropic";
-  if (provider === "google") return "Google";
-  return provider;
-}
-
-function formatDuration(ms: number): string {
-  if (!ms || ms <= 0) return "—";
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}h ${remainingMinutes}m`;
 }
 
 function Histogram({ data }: { data: ScoreDistribution[] }) {
@@ -339,9 +324,7 @@ export default function AdminStatsPage() {
   const load = React.useCallback(async () => {
     setError(null);
     try {
-      const res = await fetch("/api/admin/stats");
-      const data = (await res.json()) as { stats?: OverallStats; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error || "Failed to load stats.");
+      const data = await apiFetch<{ stats?: OverallStats }>("/api/admin/stats");
       setStats(data.stats ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load stats.");
@@ -360,35 +343,35 @@ export default function AdminStatsPage() {
 
   if (authLoading || !user?.isAdmin) {
     return (
-      <div className="flex min-h-full flex-col bg-background">
-        <SiteHeader />
-        <main className="flex flex-1 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></main>
-      </div>
+      <PageShell mainClassName="flex items-center justify-center" footer={false}>
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </PageShell>
     );
   }
 
   return (
-    <div className="flex min-h-full flex-col bg-background">
-      <SiteHeader />
-      <main className="flex-1">
-        <section className="mx-auto max-w-4xl px-4 py-12 sm:px-6 lg:px-8">
-          <Link href="/" className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground"><ChevronLeft className="mr-1 h-4 w-4" />Back to audits</Link>
-          <div className="flex items-center gap-3"><BarChart3 className="h-6 w-6 text-primary" /><h1 className="text-3xl font-bold tracking-tight">Overall stats</h1></div>
-          <p className="mt-2 text-muted-foreground">System-wide usage and activity.</p>
+    <PageShell maxWidth="4xl" backHref="/" footer={false}>
+      <div className="flex items-center gap-3"><BarChart3 className="h-6 w-6 text-primary" /><h1 className="text-3xl font-bold tracking-tight">Overall stats</h1></div>
+      <p className="mt-2 text-muted-foreground">System-wide usage and activity.</p>
 
-          {error && <div className="mt-6 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{error}</div>}
+      {error && (
+        <Alert variant="error" className="mt-6 gap-2 rounded-lg px-3 py-2 text-sm">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          {error}
+        </Alert>
+      )}
 
-          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><FileText className="h-4 w-4" />Total audits</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{stats?.totalAudits ?? 0}</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><Users className="h-4 w-4" />Total users</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{stats?.totalUsers ?? 0}</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><Coins className="h-4 w-4" />Total tokens</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{(stats?.totalTokens ?? 0).toLocaleString()}</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><Activity className="h-4 w-4" />Audits today</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{stats?.auditsToday ?? 0}</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><Coins className="h-4 w-4" />Tokens today</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{(stats?.tokensToday ?? 0).toLocaleString()}</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><BarChart3 className="h-4 w-4" />Avg tokens / audit</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{(stats?.avgTokensPerAudit ?? 0).toLocaleString()}</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><Coins className="h-4 w-4" />Est. spend</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">${(stats?.estimatedSpend ?? 0).toFixed(2)}</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><Activity className="h-4 w-4" />Cache hit rate</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{stats?.cacheHitRate ?? 0}%</div></CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground"><BarChart3 className="h-4 w-4" />Avg audit time</CardTitle></CardHeader><CardContent><div className="text-3xl font-bold">{formatDuration(stats?.avgAuditDurationMs ?? 0)}</div></CardContent></Card>
-          </div>
+      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <StatCard icon={FileText} label="Total audits" value={stats?.totalAudits ?? 0} />
+        <StatCard icon={Users} label="Total users" value={stats?.totalUsers ?? 0} />
+        <StatCard icon={Coins} label="Total tokens" value={(stats?.totalTokens ?? 0).toLocaleString()} />
+        <StatCard icon={Activity} label="Audits today" value={stats?.auditsToday ?? 0} />
+        <StatCard icon={Coins} label="Tokens today" value={(stats?.tokensToday ?? 0).toLocaleString()} />
+        <StatCard icon={BarChart3} label="Avg tokens / audit" value={(stats?.avgTokensPerAudit ?? 0).toLocaleString()} />
+        <StatCard icon={Coins} label="Est. spend" value={`$${(stats?.estimatedSpend ?? 0).toFixed(2)}`} />
+        <StatCard icon={Activity} label="Cache hit rate" value={`${stats?.cacheHitRate ?? 0}%`} />
+        <StatCard icon={BarChart3} label="Avg audit time" value={formatDuration(stats?.avgAuditDurationMs ?? 0)} />
+      </div>
 
           <div className="mt-10">
             <Card>
@@ -594,8 +577,6 @@ export default function AdminStatsPage() {
               </Card>
             )}
           </div>
-        </section>
-      </main>
-    </div>
+    </PageShell>
   );
 }

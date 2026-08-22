@@ -790,10 +790,7 @@ export default function AuditsPage() {
                               {activeTab === "report" ? (
                                 <ReportView result={report.result} />
                               ) : activeTab === "competition" ? (
-                                <CompetitionReadoutView
-                                  result={report.result}
-                                  configs={[]}
-                                />
+                                <CompetitionReadoutView result={report.result} />
                               ) : report.interactions.length > 0 ? (
                                 <InteractionsLogView
                                   interactions={report.interactions}

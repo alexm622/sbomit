@@ -5,6 +5,8 @@ import Link from "next/link";
 import { Shield, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
+import { Alert } from "@/app/components/ui/alert";
+import { apiFetchJson } from "@/app/lib/api-fetch";
 
 export default function ResetPasswordPage() {
   const [mode, setMode] = React.useState<"request" | "confirm">("request");
@@ -20,15 +22,7 @@ export default function ResetPasswordPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/auth/password-reset", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Failed to request reset.");
-      }
+      await apiFetchJson("/api/auth/password-reset", { email });
       setSuccess(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -45,15 +39,7 @@ export default function ResetPasswordPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/auth/password-reset/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, password }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Failed to reset password.");
-      }
+      await apiFetchJson("/api/auth/password-reset/confirm", { token, password });
       setSuccess(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -91,12 +77,12 @@ export default function ResetPasswordPage() {
 
         {success ? (
           <div className="space-y-4 text-center">
-            <div className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200">
+            <Alert variant="success" className="gap-2 rounded-lg px-3 py-2 text-sm">
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
               {mode === "request"
                 ? "If this email is registered, a reset token has been created."
                 : "Your password has been reset. You can now sign in."}
-            </div>
+            </Alert>
             <Button asChild variant="outline" className="w-full">
               <Link href="/login">Sign in</Link>
             </Button>
@@ -164,10 +150,10 @@ export default function ResetPasswordPage() {
             )}
 
             {error && (
-              <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+              <Alert variant="error" className="gap-2 rounded-lg px-3 py-2 text-sm">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 {error}
-              </div>
+              </Alert>
             )}
 
             <Button type="submit" className="w-full" disabled={loading}>

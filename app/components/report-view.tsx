@@ -3,15 +3,8 @@
 import * as React from "react";
 import { Badge } from "@/app/components/ui/badge";
 import { Card, CardContent } from "@/app/components/ui/card";
+import { severityVariant } from "@/app/lib/variants";
 import type { AuditResult, FindingSource } from "@/app/lib/audit";
-
-const severityBadgeVariant = (
-  severity: "critical" | "high" | "medium" | "low",
-) => {
-  if (severity === "critical" || severity === "high") return "destructive";
-  if (severity === "medium") return "warning";
-  return "secondary";
-};
 
 function SourceBadges({ sources }: { sources?: FindingSource[] | null }) {
   if (!sources || sources.length === 0) return null;
@@ -123,7 +116,7 @@ export function ReportView({ result }: { result: AuditResult }) {
                   <p className="font-medium">{risk.title}</p>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <SourceBadges sources={risk.sources} />
-                    <Badge variant={severityBadgeVariant(risk.severity)}>
+                    <Badge variant={severityVariant(risk.severity)}>
                       {risk.severity}
                     </Badge>
                   </div>
@@ -149,7 +142,7 @@ export function ReportView({ result }: { result: AuditResult }) {
                   <p className="font-medium">{finding.file}</p>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <SourceBadges sources={finding.sources} />
-                    <Badge variant={severityBadgeVariant(finding.severity)}>
+                    <Badge variant={severityVariant(finding.severity)}>
                       {finding.severity}
                     </Badge>
                   </div>
@@ -178,7 +171,7 @@ export function ReportView({ result }: { result: AuditResult }) {
                 <div className="flex items-start justify-between gap-2">
                   <p className="font-medium">{cve.id}</p>
                   {cve.severity && (
-                    <Badge variant={severityBadgeVariant(cve.severity)}>
+                    <Badge variant={severityVariant(cve.severity)}>
                       {cve.severity}
                     </Badge>
                   )}

@@ -1,12 +1,10 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronLeft,
   Loader2,
   Plus,
   RefreshCw,
@@ -15,7 +13,6 @@ import {
   Settings as SettingsIcon,
   XCircle,
 } from "lucide-react";
-import { SiteHeader } from "@/app/components/site-header";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
 import { Badge } from "@/app/components/ui/badge";
@@ -25,7 +22,11 @@ import {
   CardDescription,
   CardHeader,
 } from "@/app/components/ui/card";
+import { Select } from "@/app/components/ui/select";
+import { Alert } from "@/app/components/ui/alert";
+import { PageShell } from "@/app/components/page-shell";
 import { useProviderConfigs } from "@/app/lib/use-provider-configs";
+import { apiFetch, apiFetchJson } from "@/app/lib/api-fetch";
 import {
   providerLabels,
   PROVIDERS,
@@ -118,30 +119,21 @@ function ConfigEditor({
 
   const runModelsRequest = React.useCallback(async (): Promise<string[]> => {
     if (hasLocalCredentials) {
-      const res = await fetch("/api/models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider,
-          apiKey: apiKey.trim() || undefined,
-          baseUrl: baseUrl.trim() || undefined,
-        }),
+      const data = await apiFetchJson<{ models?: string[] }>("/api/models", {
+        provider,
+        apiKey: apiKey.trim() || undefined,
+        baseUrl: baseUrl.trim() || undefined,
       });
-      const data = (await res.json()) as { models?: string[]; error?: string };
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Failed to fetch models.");
-      }
       return data.models ?? [];
     }
 
-    const res = await fetch(`/api/providers/${config.id}/models`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
-    const data = (await res.json()) as { models?: string[]; error?: string };
-    if (!res.ok || data.error) {
-      throw new Error(data.error || "Failed to fetch models.");
-    }
+    const data = await apiFetch<{ models?: string[] }>(
+      `/api/providers/${config.id}/models`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      },
+    );
     return data.models ?? [];
   }, [
     hasLocalCredentials,
@@ -225,7 +217,7 @@ function ConfigEditor({
             >
               Provider
             </label>
-            <select
+            <Select
               id={`provider-${config.id}`}
               value={provider}
               onChange={(e) => {
@@ -233,14 +225,14 @@ function ConfigEditor({
                 setProvider(next);
                 setModelsText(defaultModels[next].join(", "));
               }}
-              className="h-12 w-full rounded-lg border border-input bg-background px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="border border-input bg-background px-4 py-2 text-sm"
             >
               {PROVIDERS.map((p) => (
                 <option key={p} value={p}>
                   {providerLabels[p]}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
 
           <div>
@@ -348,22 +340,16 @@ function ConfigEditor({
         </div>
 
         {saveError && (
-          <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+          <Alert variant="error" className="gap-2 rounded-lg px-3 py-2 text-xs">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             {saveError}
-          </div>
+          </Alert>
         )}
 
         {testStatus && (
-          <div
-            className={`
-              flex items-start gap-2 rounded-lg border px-3 py-2 text-xs
-              ${
-                testStatus.type === "success"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
-                  : "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
-              }
-            `}
+          <Alert
+            variant={testStatus.type === "success" ? "success" : "error"}
+            className="gap-2 rounded-lg px-3 py-2 text-xs"
           >
             {testStatus.type === "success" ? (
               <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -371,7 +357,7 @@ function ConfigEditor({
               <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             )}
             {testStatus.message}
-          </div>
+          </Alert>
         )}
 
         <div className="flex justify-end gap-3">
@@ -422,120 +408,101 @@ export default function SettingsPage() {
 
   if (authLoading || !user?.isAdmin) {
     return (
-      <div className="flex min-h-full flex-col items-center justify-center bg-background">
+      <PageShell mainClassName="flex items-center justify-center" footer={false}>
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
+      </PageShell>
     );
   }
 
   return (
-    <div className="flex min-h-full flex-col bg-background">
-      <SiteHeader />
-
-      <main className="flex-1">
-        <section className="mx-auto max-w-3xl px-4 py-12 sm:px-6 lg:px-8">
-          <div className="mb-8">
-            <Link
-              href="/"
-              className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground"
-            >
-              <ChevronLeft className="mr-1 h-4 w-4" />
-              Back to audits
-            </Link>
-            <div className="flex items-center gap-3">
-              <SettingsIcon className="h-6 w-6 text-primary" />
-              <h1 className="text-3xl font-bold tracking-tight">
-                Provider settings
-              </h1>
-            </div>
-            <p className="mt-2 text-muted-foreground">
-              Provider configurations are stored in D1. API keys are kept on
-              the server and are not sent back to the browser.
-            </p>
-          </div>
-
-          <div className="mb-6 flex flex-wrap items-center gap-3">
-            <span className="text-sm text-muted-foreground">Add provider:</span>
-            {PROVIDERS.map((provider) => (
-              <Button
-                key={provider}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void addConfig(provider)}
-              >
-                <Plus className="mr-1 h-4 w-4" />
-                {providerLabels[provider]}
-              </Button>
-            ))}
-          </div>
-
-          {loading && configs.length === 0 && (
-            <Card>
-              <CardContent className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading providers...
-              </CardContent>
-            </Card>
-          )}
-
-          {error && (
-            <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-left text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
-              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-              <p>{error}</p>
-            </div>
-          )}
-
-          {!loading && configs.length === 0 && (
-            <Card>
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                No providers configured yet. Add one above to start running
-                audits.
-              </CardContent>
-            </Card>
-          )}
-
-          {configs.length > 0 && (
-            <div className="space-y-6">
-              <div>
-                <label
-                  htmlFor="default-provider"
-                  className="mb-1.5 block text-sm font-medium"
-                >
-                  Default provider for new audits
-                </label>
-                <select
-                  id="default-provider"
-                  value={selectedId ?? ""}
-                  onChange={(e) => setSelectedId(e.target.value || null)}
-                  className="h-12 w-full rounded-lg border border-input bg-background px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {configs.map((config) => (
-                    <option key={config.id} value={config.id}>
-                      {config.name} ({providerLabels[config.provider]})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {configs.map((config) => (
-                <ConfigEditor
-                  key={`${config.id}-${config.updatedAt ?? ""}`}
-                  config={config}
-                  onUpdate={(patch) => updateConfig(config.id, patch)}
-                  onRemove={() => removeConfig(config.id)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
-
-      <footer className="border-t border-border py-8">
-        <div className="mx-auto max-w-6xl px-4 text-center text-sm text-muted-foreground sm:px-6 lg:px-8">
-          sbomit — AI-powered npm audits. Built for safer dependencies.
+    <PageShell maxWidth="3xl" backHref="/" footer>
+      <div className="mb-8">
+        <div className="flex items-center gap-3">
+          <SettingsIcon className="h-6 w-6 text-primary" />
+          <h1 className="text-3xl font-bold tracking-tight">
+            Provider settings
+          </h1>
         </div>
-      </footer>
-    </div>
+        <p className="mt-2 text-muted-foreground">
+          Provider configurations are stored in D1. API keys are kept on
+          the server and are not sent back to the browser.
+        </p>
+      </div>
+
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <span className="text-sm text-muted-foreground">Add provider:</span>
+        {PROVIDERS.map((provider) => (
+          <Button
+            key={provider}
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void addConfig(provider)}
+          >
+            <Plus className="mr-1 h-4 w-4" />
+            {providerLabels[provider]}
+          </Button>
+        ))}
+      </div>
+
+      {loading && configs.length === 0 && (
+        <Card>
+          <CardContent className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading providers...
+          </CardContent>
+        </Card>
+      )}
+
+      {error && (
+        <Alert variant="error" className="mb-6 gap-3 rounded-xl px-4 py-3 text-left text-sm">
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+          <p>{error}</p>
+        </Alert>
+      )}
+
+      {!loading && configs.length === 0 && (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No providers configured yet. Add one above to start running
+            audits.
+          </CardContent>
+        </Card>
+      )}
+
+      {configs.length > 0 && (
+        <div className="space-y-6">
+          <div>
+            <label
+              htmlFor="default-provider"
+              className="mb-1.5 block text-sm font-medium"
+            >
+              Default provider for new audits
+            </label>
+            <Select
+              id="default-provider"
+              value={selectedId ?? ""}
+              onChange={(e) => setSelectedId(e.target.value || null)}
+              className="border border-input bg-background px-4 py-2 text-sm"
+            >
+              {configs.map((config) => (
+                <option key={config.id} value={config.id}>
+                  {config.name} ({providerLabels[config.provider]})
+                </option>
+              ))}
+            </Select>
+          </div>
+
+          {configs.map((config) => (
+            <ConfigEditor
+              key={`${config.id}-${config.updatedAt ?? ""}`}
+              config={config}
+              onUpdate={(patch) => updateConfig(config.id, patch)}
+              onRemove={() => removeConfig(config.id)}
+            />
+          ))}
+        </div>
+      )}
+    </PageShell>
   );
 }
